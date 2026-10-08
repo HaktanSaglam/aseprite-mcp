@@ -1,0 +1,4 @@
+node_modules/
+dist/
+*.aseprite-extension
+.DS_Store

@@ -1,0 +1,14 @@
+{
+  "name": "claude-pixel-bridge",
+  "displayName": "Claude Pixel Bridge",
+  "description": "Connects Aseprite to a local MCP bridge so Claude can read and draw pixels.",
+  "version": "0.1.0",
+  "author": { "name": "Haktan Saglam" },
+  "license": "MIT",
+  "categories": ["Scripts"],
+  "contributes": {
+    "scripts": [
+      { "path": "./main.lua" }
+    ]
+  }
+}
