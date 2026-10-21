@@ -1,4 +1,4 @@
-import { WebSocketServer, type WebSocket } from "ws";
+import { WebSocket, WebSocketServer } from "ws";
 
 /** Bridge → Aseprite request/response (used by the MCP tools). */
 export interface IAsepriteRpc {
@@ -14,6 +14,8 @@ export interface AsepriteEvent {
 
 export interface IAsepriteEvents {
   onEvent(handler: (event: AsepriteEvent) => void): void;
+  /** Called with false when Aseprite goes away (a reconnect replacing the socket is not a disconnect). */
+  onConnectionChange(handler: (connected: boolean) => void): void;
   /** Fire-and-forget; silently dropped while Aseprite is disconnected. */
   notify(event: AsepriteEvent): void;
 }
@@ -49,6 +51,7 @@ export class AsepriteSocket implements IAsepriteRpc, IAsepriteEvents {
   private nextId = 1;
   private readonly pending = new Map<number, PendingCall>();
   private readonly eventHandlers: ((event: AsepriteEvent) => void)[] = [];
+  private readonly connectionHandlers: ((connected: boolean) => void)[] = [];
 
   constructor(private readonly options: Options) {}
 
@@ -79,13 +82,18 @@ export class AsepriteSocket implements IAsepriteRpc, IAsepriteEvents {
     this.eventHandlers.push(handler);
   }
 
+  onConnectionChange(handler: (connected: boolean) => void): void {
+    this.connectionHandlers.push(handler);
+  }
+
   notify(event: AsepriteEvent): void {
-    this.client?.send(JSON.stringify(event));
+    if (this.client?.readyState === WebSocket.OPEN) this.client.send(JSON.stringify(event));
   }
 
   call<T>(method: string, params: object): Promise<T> {
     const client = this.client;
-    if (!client) {
+    // A closing socket would swallow the request and leave the caller waiting for the timeout.
+    if (!client || client.readyState !== WebSocket.OPEN) {
       return Promise.reject(
         new Error(
           "Aseprite is not connected. Open Aseprite with the Claude Pixel Bridge extension installed.",
@@ -106,8 +114,10 @@ export class AsepriteSocket implements IAsepriteRpc, IAsepriteEvents {
   private attach(socket: WebSocket): void {
     // Only one Aseprite instance at a time; a reconnect replaces the old socket.
     if (this.client && this.client !== socket) this.client.close();
+    const wasConnected = this.client !== null;
     this.client = socket;
     console.error("[bridge] Aseprite connected");
+    if (!wasConnected) this.emitConnection(true);
 
     socket.on("message", (raw) => this.onMessage(raw.toString()));
     socket.on("close", () => {
@@ -115,7 +125,19 @@ export class AsepriteSocket implements IAsepriteRpc, IAsepriteEvents {
       this.client = null;
       console.error("[bridge] Aseprite disconnected");
       this.rejectAll(new Error("Aseprite disconnected"));
+      this.emitConnection(false);
     });
+  }
+
+  // A throwing handler must not stop the others or break message processing.
+  private emitConnection(connected: boolean): void {
+    for (const handler of this.connectionHandlers) {
+      try {
+        handler(connected);
+      } catch (error) {
+        console.error("[bridge] connection handler failed:", error);
+      }
+    }
   }
 
   private onMessage(text: string): void {
@@ -128,7 +150,13 @@ export class AsepriteSocket implements IAsepriteRpc, IAsepriteEvents {
 
     if (typeof msg.event === "string") {
       if (msg.event === "hello") console.error(`[bridge] Aseprite hello: ${text}`);
-      for (const handler of this.eventHandlers) handler(msg as AsepriteEvent);
+      for (const handler of this.eventHandlers) {
+        try {
+          handler(msg as AsepriteEvent);
+        } catch (error) {
+          console.error(`[bridge] "${msg.event}" handler failed:`, error);
+        }
+      }
       return;
     }
     if (msg.id === undefined) return;

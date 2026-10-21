@@ -2,16 +2,21 @@ import { AsepriteSocket } from "./aseprite/AsepriteSocket.js";
 import { RpcAsepriteGateway } from "./aseprite/RpcAsepriteGateway.js";
 import { CanvasService } from "./canvas/CanvasService.js";
 import { ChatService } from "./chat/ChatService.js";
+import { GenerationService } from "./chat/GenerationService.js";
+import { InstantToolService } from "./chat/InstantToolService.js";
+import { SessionStore } from "./chat/SessionStore.js";
+import { SingleRunService } from "./chat/SingleRunService.js";
 import { loadConfig } from "./config.js";
-import { ClaudeCliRunner } from "./llm/ClaudeCliRunner.js";
-import { createMcpServer } from "./mcp/createMcpServer.js";
-import { startMcpHttpServer } from "./mcp/httpServer.js";
+import { createProviderRegistry } from "./llm/ProviderRegistry.js";
+import { createMcpServer, scopeToolContext } from "./mcp/createMcpServer.js";
+import { mcpUrls, startMcpHttpServer } from "./mcp/httpServer.js";
+import type { ToolContext } from "./mcp/ToolContext.js";
 import { QuickJsScriptRunner } from "./script/QuickJsScriptRunner.js";
 
 // Composition root: the only place that knows which concrete classes are used.
 async function main(): Promise<void> {
   const config = loadConfig();
-  const mcpUrl = `http://${config.host}:${config.mcpPort}/mcp`;
+  const urls = mcpUrls(config.host, config.mcpPort);
 
   const socket = new AsepriteSocket({
     host: config.host,
@@ -21,16 +26,30 @@ async function main(): Promise<void> {
   await socket.start();
   const gateway = new RpcAsepriteGateway(socket);
 
-  // One runner for all requests: it caches the compiled QuickJS WebAssembly module.
-  const tools = { gateway, canvas: new CanvasService(gateway), scripts: new QuickJsScriptRunner() };
-  const http = await startMcpHttpServer({ host: config.host, port: config.mcpPort }, () =>
-    createMcpServer(tools),
-  );
+  // One script runner for all requests: it caches the compiled QuickJS WebAssembly module.
+  const baseContext: ToolContext = { gateway, canvas: new CanvasService(gateway), scripts: new QuickJsScriptRunner() };
+  const contextFor = (sprite?: number) => (sprite === undefined ? baseContext : scopeToolContext(baseContext, sprite));
+  const serverFor = (sprite?: number) => createMcpServer(contextFor(sprite));
 
-  const runner = new ClaudeCliRunner({ claudePath: config.claudePath, workDir: config.claudeWorkDir });
-  new ChatService(socket, runner, mcpUrl).attach();
+  const http = await startMcpHttpServer({ host: config.host, port: config.mcpPort }, (scope) => serverFor(scope.sprite));
 
-  console.error(`[bridge] MCP endpoint:      ${mcpUrl}`);
+  const sessions = new SessionStore();
+  new ChatService({
+    events: socket,
+    registry: createProviderRegistry(config),
+    singleRun: new SingleRunService({ gateway, mcpUrls: urls, sessions }),
+    generation: new GenerationService({
+      gateway,
+      mcpUrlFor: urls.forSprite,
+      sessions,
+      maxParallelRuns: config.maxParallelRuns,
+    }),
+    instantTools: new InstantToolService(serverFor),
+    sessions,
+    version: config.version,
+  }).attach();
+
+  console.error(`[bridge] v${config.version} MCP endpoint: ${urls.unscoped}`);
   console.error(`[bridge] Waiting for Aseprite on ws://${config.host}:${config.asepritePort}`);
 
   const shutdown = () => {
