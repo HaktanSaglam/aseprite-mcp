@@ -1,4 +1,21 @@
+# Dependencies and build output
 node_modules/
 dist/
 *.aseprite-extension
+*.tgz
+coverage/
+
+# Logs and local settings
+*.log
+.env
+.env.*
+
+# OS and editor files
 .DS_Store
+Thumbs.db
+*.swp
+.idea/
+
+# Claude Code: per-user settings and agent worktrees
+.claude/settings.local.json
+.claude/worktrees/

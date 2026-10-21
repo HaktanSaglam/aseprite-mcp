@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Troubleshooting guide
+    url: https://github.com/HaktanSaglam/aseprite-mcp/blob/main/docs/TROUBLESHOOTING.md
+    about: Fixes for the most common problems (security prompt, bridge offline, ports, expired login).
+  - name: Connect another MCP client
+    url: https://github.com/HaktanSaglam/aseprite-mcp/blob/main/docs/CLIENTS.md
+    about: Config snippets for Claude Code, Claude Desktop, Cursor, VS Code, Codex, Gemini CLI, Windsurf and Zed.
+  - name: Report a security vulnerability
+    url: https://github.com/HaktanSaglam/aseprite-mcp/security/advisories/new
+    about: Please report security problems privately, not as public issues.
