@@ -35,6 +35,11 @@ export interface LlmRunRequest {
   /** Appended to the provider's own system prompt. */
   systemPrompt: string;
   signal?: AbortSignal;
+  /**
+   * Hint that no follow-up will come (e.g. one job of a parallel batch), so runners
+   * should not keep a warm process around for this conversation. Default: true.
+   */
+  keepAlive?: boolean;
 }
 
 /**
@@ -56,6 +61,8 @@ export interface ProviderInfo {
   available: boolean;
   note?: string;
   supportsImages: boolean;
+  /** Model used when a request names none; one of `models` when that list is not empty. */
+  defaultModel?: string;
 }
 
 export interface IProviderRegistry {
@@ -63,4 +70,6 @@ export interface IProviderRegistry {
   list(): Promise<ProviderInfo[]>;
   /** Throws a user-readable error for unknown or unavailable providers. */
   runner(id: string): ILlmRunner;
+  /** Stops warm CLI processes; call on bridge shutdown. */
+  dispose?(): void;
 }
