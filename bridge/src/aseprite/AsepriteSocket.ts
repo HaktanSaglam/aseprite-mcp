@@ -96,7 +96,7 @@ export class AsepriteSocket implements IAsepriteRpc, IAsepriteEvents {
     if (!client || client.readyState !== WebSocket.OPEN) {
       return Promise.reject(
         new Error(
-          "Aseprite is not connected. Open Aseprite with the Claude Pixel Bridge extension installed.",
+          "Aseprite is not connected. Open Aseprite with the Aseprite MCP extension installed.",
         ),
       );
     }

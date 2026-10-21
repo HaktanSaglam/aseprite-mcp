@@ -17,6 +17,8 @@ export interface BridgeConfig {
   configFile: string;
   /** How many model runs may draw at the same time (parallel variations / batches). */
   maxParallelRuns: number;
+  /** Port of the development endpoint (src/dev), or undefined when ASEPRITE_MCP_DEV is off. */
+  devPort?: number;
 }
 
 function intFromEnv(value: string | undefined, fallback: number): number {
@@ -46,5 +48,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BridgeConfig {
     configFile: env.ASEPRITE_MCP_CONFIG ?? join(homedir(), ".aseprite-mcp", "config.json"),
     // Each run is a model process of its own; dozens at once only hit rate limits and memory.
     maxParallelRuns: Math.min(8, Math.max(1, intFromEnv(env.ASEPRITE_MAX_PARALLEL, 4))),
+    devPort: env.ASEPRITE_MCP_DEV === "1" ? intFromEnv(env.ASEPRITE_MCP_DEV_PORT, 7802) : undefined,
   };
 }
