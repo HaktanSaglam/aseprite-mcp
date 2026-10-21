@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { AsepriteEvent, IAsepriteEvents } from "../aseprite/AsepriteSocket.js";
 import type { ILlmRunner, LlmEvent } from "../llm/LlmRunner.js";
-import { buildPrompt } from "./promptBuilder.js";
+import { buildPrompt, CHAT_SYSTEM_PROMPT } from "./promptBuilder.js";
 
 // Events come from Lua, so validate instead of trusting their shape.
 const ChatSendSchema = z.object({
@@ -33,6 +33,7 @@ export class ChatService {
   constructor(
     private readonly events: IAsepriteEvents,
     private readonly runner: ILlmRunner,
+    private readonly mcpUrl: string,
   ) {}
 
   attach(): void {
@@ -73,6 +74,8 @@ export class ChatService {
         prompt,
         sessionId: this.sessionId,
         model: request.model,
+        mcpUrl: this.mcpUrl,
+        systemPrompt: CHAT_SYSTEM_PROMPT,
         signal: controller.signal,
       });
       for await (const event of run) this.forward(event);

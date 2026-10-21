@@ -1,4 +1,4 @@
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 
 export interface BridgeConfig {
@@ -8,7 +8,12 @@ export interface BridgeConfig {
   asepritePort: number;
   requestTimeoutMs: number;
   claudePath: string;
+  /** Empty working directory for CLI runs (keeps project files and CLAUDE.md out). */
   claudeWorkDir: string;
+  /** Optional JSON file with provider settings (API keys, base URLs, default models). */
+  configFile: string;
+  /** How many model runs may draw at the same time (parallel variations / batches). */
+  maxParallelRuns: number;
 }
 
 function intFromEnv(value: string | undefined, fallback: number): number {
@@ -24,5 +29,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BridgeConfig {
     requestTimeoutMs: intFromEnv(env.ASEPRITE_REQUEST_TIMEOUT_MS, 30_000),
     claudePath: env.CLAUDE_PATH ?? "claude",
     claudeWorkDir: env.ASEPRITE_CLAUDE_WORKDIR ?? join(tmpdir(), "aseprite-mcp-claude"),
+    configFile: env.ASEPRITE_MCP_CONFIG ?? join(homedir(), ".aseprite-mcp", "config.json"),
+    maxParallelRuns: Math.max(1, intFromEnv(env.ASEPRITE_MAX_PARALLEL, 4)),
   };
 }

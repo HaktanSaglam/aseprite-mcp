@@ -2,7 +2,6 @@ import { AsepriteSocket } from "./aseprite/AsepriteSocket.js";
 import { RpcAsepriteGateway } from "./aseprite/RpcAsepriteGateway.js";
 import { CanvasService } from "./canvas/CanvasService.js";
 import { ChatService } from "./chat/ChatService.js";
-import { CHAT_SYSTEM_PROMPT } from "./chat/promptBuilder.js";
 import { loadConfig } from "./config.js";
 import { ClaudeCliRunner } from "./llm/ClaudeCliRunner.js";
 import { createMcpServer } from "./mcp/createMcpServer.js";
@@ -28,13 +27,8 @@ async function main(): Promise<void> {
     createMcpServer(tools),
   );
 
-  const runner = new ClaudeCliRunner({
-    claudePath: config.claudePath,
-    mcpUrl,
-    workDir: config.claudeWorkDir,
-    systemPrompt: CHAT_SYSTEM_PROMPT,
-  });
-  new ChatService(socket, runner).attach();
+  const runner = new ClaudeCliRunner({ claudePath: config.claudePath, workDir: config.claudeWorkDir });
+  new ChatService(socket, runner, mcpUrl).attach();
 
   console.error(`[bridge] MCP endpoint:      ${mcpUrl}`);
   console.error(`[bridge] Waiting for Aseprite on ws://${config.host}:${config.asepritePort}`);

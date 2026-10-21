@@ -6,11 +6,8 @@ import type { ILlmRunner, LlmEvent, LlmRunRequest } from "./LlmRunner.js";
 interface Options {
   /** Executable name or path of the Claude Code CLI. */
   claudePath: string;
-  /** MCP endpoint of this bridge, so the headless run can draw in Aseprite. */
-  mcpUrl: string;
   /** Empty working directory: keeps project CLAUDE.md files and file tools out of the run. */
   workDir: string;
-  systemPrompt: string;
 }
 
 const MCP_SERVER_NAME = "aseprite";
@@ -66,7 +63,7 @@ export class ClaudeCliRunner implements ILlmRunner {
   }
 
   async *run(request: LlmRunRequest): AsyncIterable<LlmEvent> {
-    const mcpConfig = { mcpServers: { [MCP_SERVER_NAME]: { type: "http", url: this.options.mcpUrl } } };
+    const mcpConfig = { mcpServers: { [MCP_SERVER_NAME]: { type: "http", url: request.mcpUrl } } };
     const args = [
       "-p",
       "--output-format", "stream-json",
@@ -77,9 +74,10 @@ export class ClaudeCliRunner implements ILlmRunner {
       "--tools", "",
       "--allowedTools", `${TOOL_PREFIX}*`,
       "--setting-sources", "",
-      "--append-system-prompt", this.options.systemPrompt,
+      "--append-system-prompt", request.systemPrompt,
     ];
     if (request.model) args.push("--model", request.model);
+    if (request.effort) args.push("--effort", request.effort);
     if (request.sessionId) args.push("--resume", request.sessionId);
 
     const child = spawn(this.options.claudePath, args, {

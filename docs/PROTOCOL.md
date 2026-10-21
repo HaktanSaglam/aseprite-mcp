@@ -142,3 +142,96 @@ Bridge → Aseprite:
 | `chat` | `kind: "text"\|"tool"\|"status"\|"error"\|"busy"\|"done"\|"progress"`, plus `text` / `name` / `busy` / `stats` |
 | `tool_result` | `requestId, ok, text` |
 | `bridge_info` | `version, providers: [{id, label, models, efforts, available, note?}]` |
+
+## Chat contract (UI ↔ bridge)
+
+### `chat_send`
+
+```ts
+{
+  event: "chat_send",
+  text: string,                      // what the user typed (may be empty for some actions)
+  action?: ChatAction,               // default "chat"
+  options?: ChatOptions,
+  selection?: Rect,                  // only when "use selection" is on and something is selected
+  sprite?: number,                   // sprite.id of the active sprite when the message was sent
+}
+
+type ChatAction =
+  | "chat"            // free-form request
+  | "generate"        // text → new sprite (Generate tab)
+  | "edit_selection"  // redraw/inpaint the selected area
+  | "review"          // look at the sprite and fix pixel-art problems
+  | "animate"         // turn the current sprite/frame into an animation (Animate tab)
+  | "variations"      // N alternative versions in parallel (options.count)
+  | "batch"           // one sprite per item in options.items, in parallel
+  | "directions";     // the same character facing 4 or 8 directions (options.directions)
+
+interface ChatOptions {
+  provider?: string;                 // ProviderInfo.id, default "claude-code"
+  model?: string;                    // provider model id ("opus", "sonnet", "gpt-5", ...)
+  effort?: "low" | "medium" | "high" | "xhigh" | "max";
+  style?: StyleId;
+  palette?: PaletteId;               // "auto" | "current" | a preset id
+  size?: { width: number; height: number };   // canvas size for generate/variations/batch/directions
+  target?: "new_sprite" | "new_layer" | "active_layer";
+  view?: "front" | "side" | "three_quarter" | "top_down" | "isometric";
+  directions?: 4 | 8;
+  count?: number;                    // variations: 2-4
+  items?: string[];                  // batch: one prompt per item
+  outline?: boolean;                 // ask for a 1px dark outline
+  background?: "transparent" | "solid";
+  animation?: {
+    preset: "idle" | "walk" | "run" | "jump" | "attack" | "hurt" | "death" | "custom";
+    frames: number;                  // 2-16
+    frameMs: number;                 // duration per frame
+    loop: boolean;
+  };
+  autoReview?: boolean;              // one extra look-and-fix pass at the end
+}
+
+type StyleId = "auto" | "8bit" | "16bit" | "gameboy" | "pico8" | "1bit" | "hd";
+type PaletteId = "auto" | "current" | "pico8" | "sweetie16" | "endesga32" | "endesga64"
+  | "db16" | "db32" | "aap64" | "resurrect64" | "gameboy" | "nes" | "1bit";
+```
+
+### `tool_run` → `tool_result`
+
+Instant, non-AI tools from the Tools tab. The bridge calls the MCP tool of the same
+name in-process and answers `{event: "tool_result", requestId, ok, text}`.
+
+Allowed tools and their arguments (all accept the common target `layer?`,
+`frames?: "current" | "all" | number[]`, `selectionOnly?: boolean`):
+
+| tool | arguments |
+|---|---|
+| `remove_background` | `mode?: "edges" \| "color"`, `color?`, `tolerance?` (0-100) |
+| `add_outline` | `color?` (default: darkest neighbour shade), `placement?: "outside" \| "inside"`, `connectivity?: 4 \| 8` |
+| `reduce_colors` | `colors` (2-64), `dither?: "none" \| "ordered" \| "floyd"` |
+| `apply_palette` | `palette` (PaletteId or `#rrggbb[]`), `dither?`, `setSpritePalette?: boolean` |
+| `adjust_colors` | `hue?` (-180..180), `saturation?`, `lightness?`, `brightness?`, `contrast?` (-100..100), `invert?`, `grayscale?` |
+| `replace_color` | `from`, `to`, `tolerance?` |
+| `cleanup_pixels` | `minNeighbors?` (default 1: removes isolated single pixels) |
+| `transform_layer` | `op: "flip_h" \| "flip_v" \| "rotate_90" \| "rotate_180" \| "rotate_270" \| "shift"`, `dx?`, `dy?`, `wrap?` |
+| `drop_shadow` | `dx?`, `dy?`, `color?` |
+| `undo` / `redo` | `steps?` |
+
+### `bridge_info`
+
+Sent right after `hello` and whenever provider availability changes:
+
+```ts
+{ event: "bridge_info", version: string, providers: ProviderInfo[], defaultProvider: string }
+ProviderInfo = { id, label, models: [{id, label}], efforts: string[], available, note?, supportsImages }
+```
+
+### `chat` updates
+
+`{event: "chat", kind, ...}`:
+- `text` `{text}` – assistant text (plain, 1-3 sentences)
+- `tool` `{name}` – a tool call started (UI shows a short label)
+- `status` `{text}` – neutral progress ("Variation 2/4 done")
+- `progress` `{done, total, label?}` – parallel jobs progress
+- `error` `{text}`
+- `busy` `{busy}` – a run started/finished
+- `done` `{stats: {durationMs, turns?, costUsd?}}` – after a successful run
