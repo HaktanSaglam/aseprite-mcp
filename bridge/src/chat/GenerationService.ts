@@ -183,7 +183,13 @@ export class GenerationService implements IChatRequestHandler {
     const outcomes = await mapLimit(jobs, maxParallelRuns, async (job): Promise<JobOutcome> => {
       const outcome = await executeRun(
         run.provider,
-        { prompt: job.prompt, systemPrompt: CHAT_SYSTEM_PROMPT, mcpUrl: mcpUrlFor(job.info.id), images: job.images },
+        {
+          prompt: job.prompt,
+          systemPrompt: CHAT_SYSTEM_PROMPT,
+          mcpUrl: mcpUrlFor(job.info.id),
+          images: job.images,
+          keepAlive: false,
+        },
         run.sink,
         run.signal,
         { label: job.label, quietTools: true },

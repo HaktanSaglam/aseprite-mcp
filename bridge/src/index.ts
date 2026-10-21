@@ -36,10 +36,11 @@ async function main(): Promise<void> {
   const http = await startMcpHttpServer({ host: config.host, port: config.mcpPort }, (scope) => serverFor(scope.sprite));
 
   const sessions = new SessionStore();
+  const registry = createProviderRegistry(config);
   const tapped = config.devPort !== undefined ? new TappedEvents(socket) : undefined;
   new ChatService({
     events: tapped ?? socket,
-    registry: createProviderRegistry(config),
+    registry,
     singleRun: new SingleRunService({ gateway, mcpUrls: urls, sessions }),
     generation: new GenerationService({
       gateway,
@@ -61,6 +62,7 @@ async function main(): Promise<void> {
   if (dev) console.error(`[bridge] Dev endpoint: http://${config.host}:${config.devPort}`);
 
   const shutdown = () => {
+    registry.dispose?.();
     socket.stop();
     http.close();
     dev?.close();

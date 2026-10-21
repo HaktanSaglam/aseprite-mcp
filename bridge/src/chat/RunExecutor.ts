@@ -9,6 +9,8 @@ export interface JobRequest {
   mcpUrl: string;
   images?: LlmImage[];
   sessionId?: string;
+  /** False for jobs nobody will follow up on (one of N variations), so no warm process lingers. */
+  keepAlive?: boolean;
 }
 
 export interface JobPresentation {
@@ -55,6 +57,7 @@ export async function executeRun(
       sessionId: job.sessionId,
       model: provider.model,
       effort: provider.effort,
+      keepAlive: job.keepAlive,
       signal,
     });
     let finished = false;

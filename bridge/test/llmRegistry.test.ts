@@ -16,6 +16,7 @@ let dir: string;
 let configFile: string;
 
 const bridgeConfig = (): BridgeConfig => ({
+  version: "0.0.0-test",
   host: "127.0.0.1",
   mcpPort: 7800,
   asepritePort: 7801,
