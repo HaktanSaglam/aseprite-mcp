@@ -247,7 +247,8 @@ describe("manage_tags", () => {
     expect(await h.error("manage_tags", { action: "update", name: "walk" })).toMatch(/needs at least one of/);
     expect(await h.error("manage_tags", { action: "delete", name: "run" })).toMatch(/Tag "run" not found\. Tags: walk/);
     expect(await h.error("manage_tags", { action: "add", name: "x", color: "red" })).toMatch(/Use #rrggbb/);
-    expect(await h.error("manage_tags", { action: "update", name: "walk", color: "#ff0000" })).toMatch(/'update' does not use color/);
+    await h.json("manage_tags", { action: "update", name: "walk", color: "#00ff00" });
+    expect(gw.callsOf("tagOp").at(-1)?.[0]).toMatchObject({ op: "update", color: "#00ff00" });
   });
 });
 

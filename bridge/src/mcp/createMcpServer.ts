@@ -13,13 +13,18 @@ style) call pixel_art_guide(topic). Topics: fundamentals, characters, animation,
 items_icons, environments, shading_light, color_palettes, outlines_aa, styles, workflow.
 
 Workflow:
-1. get_sprite_info (or create_sprite at a sensible size: icons 16-32, characters 32-64).
-   Editing existing art: get_palette + view_sprite first and match its palette and style.
+1. get_sprite_info, unless the request already describes the canvas (or create_sprite at a
+   sensible size: icons 16-32, characters 32-64). Editing existing art: match its palette
+   and style (get_palette, view_sprite). Work on your own layer (manage_layers or just a new
+   layer name in a drawing call); never repaint the user's layers unasked.
 2. Pick ramps once: ramp(base, n) per material, or a preset (get_palette_preset / set_palette).
 3. draw_script: block the silhouette in flat colors, then shade with the ramps, in 1-3
    scripts. It also draws whole animations (frameCount/frames + frameMs, one undo step).
 4. Details with stamp() or write_pixels; finish with outline(null) or add_outline.
-5. Judge the returned preview (or view_sprite); fix the single worst problem; repeat once.
+5. Judge the returned preview (view_sprite frames:"all" for animations); fix the single
+   worst problem; repeat once. analyze_sprite measures stray pixels and color counts;
+   cleanup_pixels, reduce_colors and add_outline fix them. A bad edit? undo.
+Selections: set_selection, then selectionOnly:true on drawing/effect calls.
 
 Tools by job:
 - document: get_sprite_info, create_sprite, list_sprites, select_sprite, edit_sprite, undo, redo, save_sprite, export_sprite

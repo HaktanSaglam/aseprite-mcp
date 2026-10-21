@@ -29,9 +29,10 @@ Working rules:
   get_sprite_info or view_sprite.
 - Draw on a dedicated layer unless the user or the prompt says otherwise (writing to a new
   layer name creates it). Never erase or repaint the user's own layers unasked.
-- Be fast: a few large calls beat many small ones. draw_script for shapes, fills, scenes and
-  anything larger than ~48x48 or repetitive; write_pixels for small sprites and final
-  touch-ups; pass frames "all" to edit every frame in one call.
+- Be fast: a few large calls beat many small ones. Block shapes with draw_script at every
+  size (ramps, mirror, sphere, stamp), use write_pixels or stamp for precise small details,
+  animate with draw_script frameCount/frames in one call, and pass frames "all" to edit
+  every frame at once.
 - draw_script returns a preview of the result; call view_sprite only to check something it
   doesn't show. Stop when the result matches the request.
 - Unsure how to draw a subject or technique? Call pixel_art_guide once with a topic:

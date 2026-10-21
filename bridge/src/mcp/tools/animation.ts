@@ -41,7 +41,7 @@ const FRAME_PARAMS: Record<ManageFramesArgs["action"], string[]> = {
 
 const TAG_PARAMS: Record<ManageTagsArgs["action"], string[]> = {
   add: ["name", "from", "to", "direction", "repeats", "color"],
-  update: ["name", "newName", "from", "to", "direction", "repeats"],
+  update: ["name", "newName", "from", "to", "direction", "repeats", "color"],
   delete: ["name"],
 };
 
@@ -108,13 +108,13 @@ export function toTagOp(args: ManageTagsArgs, info: SpriteInfo): TagOp {
     }
     case "update": {
       const tag = requireTag(info, args.name);
-      const { newName, from, to, direction, repeats } = args;
-      if ([newName, from, to, direction, repeats].every((v) => v === undefined)) {
-        throw new Error("update needs at least one of newName, from, to, direction, repeats");
+      const { newName, from, to, direction, repeats, color } = args;
+      if ([newName, from, to, direction, repeats, color].every((v) => v === undefined)) {
+        throw new Error("update needs at least one of newName, from, to, direction, repeats, color");
       }
       if (newName !== undefined && newName !== tag.name) requireFreeTagName(info, newName);
       checkRange(from ?? tag.from, to ?? tag.to, frameCount);
-      return { op: "update", name: tag.name, newName, from, to, direction, repeats };
+      return { op: "update", name: tag.name, newName, from, to, direction, repeats, color };
     }
     case "delete":
       return { op: "delete", name: requireTag(info, args.name).name };
@@ -212,7 +212,7 @@ export const registerAnimationTools: ToolRegistrar = (server, { gateway }) => {
           .string()
           .regex(/^#?[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$/, "Use #rrggbb")
           .optional()
-          .describe("add: tag color in the timeline, #rrggbb."),
+          .describe("add/update: tag color in the timeline, #rrggbb."),
       },
     },
     async (args) => {

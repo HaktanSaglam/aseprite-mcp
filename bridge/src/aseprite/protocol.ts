@@ -132,6 +132,7 @@ export type TagOp =
       to?: number;
       direction?: AnimationDirection;
       repeats?: number;
+      color?: string;
     }
   | { op: "delete"; name: string };
 

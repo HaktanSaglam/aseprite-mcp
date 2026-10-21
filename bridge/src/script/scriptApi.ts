@@ -1,3 +1,4 @@
+import { getPalettePreset, PALETTE_PRESET_IDS } from "../pixel/palettes.js";
 import { textWidth } from "../pixel/pixelFont.js";
 import { bayer, type GradientDirection, type GradientMode, type LightDirection, type Raster } from "../pixel/Raster.js";
 import { mix, ramp, shade, type RampOptions } from "./colorMath.js";
@@ -32,6 +33,7 @@ Color (return "#rrggbb"):
   ramp(base,steps=5,{hueShift=20,satShift=0.35}) -> [dark..light], base at index floor((steps-1)/2);
     shadows shift toward blue-violet, highlights toward yellow, saturation peaks mid-ramp
   shade(c,amount -1..1) hue-shifted darker(<0)/lighter(>0), ±0.4 ~ one ramp step   mix(c1,c2,t)
+  pal(id) -> a preset's colors: ${PALETTE_PRESET_IDS.join(" ")}
 Random: rand(n) -> int [0,n), rand() -> [0,1); restarts from the seed every frame.
   noise(x,y,scale=8,octaves=1) -> 0..1 smooth seeded value noise (same every frame).
 console.log(...) is returned (max 20 lines). A top-level return ends the script.
@@ -202,6 +204,7 @@ export function createScriptApi(scope: ScriptScope): Record<string, HostFunction
     ramp: (base, steps, options) => ramp(color(base, "base"), optNum(steps, "steps", 5), rampOptions(options)),
     shade: (c, amount) => shade(color(c), num(amount, "amount")),
     mix: (a, b, t) => mix(color(a, "c1"), color(b, "c2"), num(t, "t")),
+    pal: (id) => [...getPalettePreset(oneOf(id, [...PALETTE_PRESET_IDS], "id", "pico8")).colors],
     noise: (x, y, scale, octaves) =>
       scope.noise(num(x, "x"), num(y, "y"), optNum(scale, "scale", 8), optNum(octaves, "octaves", 1)),
     rand: (n) => (n === undefined ? scope.random() : Math.floor(scope.random() * num(n, "n"))),
