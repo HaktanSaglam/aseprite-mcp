@@ -291,3 +291,11 @@ describe("MCP conversion helpers", () => {
     ).toEqual({ text: "a\n[image of type image/jpeg omitted]", images: [{ mediaType: "image/png", base64: "AAA" }], isError: true });
   });
 });
+
+describe("ensureOk hints", () => {
+  it("suggests a tool-capable model when the server says tools are unsupported", async () => {
+    const { ensureOk } = await import("../src/llm/http/httpJson.js");
+    const response = { status: 400, headers: {}, text: "", json: { error: "registry.ollama.ai/library/gemma:2b does not support tools" } };
+    expect(() => ensureOk("Ollama", response as never)).toThrow(/Pick a model with tool calling/);
+  });
+});

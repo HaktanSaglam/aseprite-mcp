@@ -60,6 +60,8 @@ export function modelOptions(configured: string[] | undefined, model: string | u
 }
 
 const LIST_CACHE_MS = 30_000;
+// A server that is down right now may be started a moment later (e.g. `ollama serve`).
+const FAILURE_CACHE_MS = 3_000;
 const MAX_LISTED = 40;
 
 /**
@@ -74,7 +76,8 @@ export class RemoteModelLister {
   /** Model ids, or undefined when the server cannot be reached. */
   async list(baseUrl: string, apiKey?: string): Promise<string[] | undefined> {
     const cached = this.cache.get(baseUrl);
-    if (cached && Date.now() - cached.at < LIST_CACHE_MS) return cached.ids;
+    const ttl = cached?.ids ? LIST_CACHE_MS : FAILURE_CACHE_MS;
+    if (cached && Date.now() - cached.at < ttl) return cached.ids;
     let ids: string[] | undefined;
     try {
       const response = await requestJson(`${baseUrl}/models`, {

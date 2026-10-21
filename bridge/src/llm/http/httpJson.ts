@@ -133,7 +133,11 @@ export function providerMessage(response: JsonResponse): string {
 export function ensureOk(label: string, response: JsonResponse, authHint?: string): JsonResponse {
   if (response.status >= 200 && response.status < 300) return response;
   const detail = providerMessage(response);
-  const hint = (response.status === 401 || response.status === 403) && authHint ? ` ${authHint}` : "";
+  let hint = (response.status === 401 || response.status === 403) && authHint ? ` ${authHint}` : "";
+  // Drawing is all tool calls; a model without tool calling can't do anything useful here.
+  if (/does not support tools|tool(s| use| calling)? (is |are )?not supported/i.test(detail)) {
+    hint += " Pick a model with tool calling (e.g. qwen3, llama3.1, mistral-small, gpt-oss).";
+  }
   throw new ProviderHttpError(
     `${label} error (HTTP ${response.status}): ${detail}${hint}`,
     response.status,
