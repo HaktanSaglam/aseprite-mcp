@@ -85,7 +85,7 @@ describe("scopeToolContext", () => {
     const inner = new FakeGateway();
     inner.addSprite({ id: 3 });
     inner.addSprite({ id: 7 });
-    const scripts = { run: async () => ({ image: createRgbaImage(1, 1), calls: 0, elapsedMs: 0 }) };
+    const scripts = { run: async () => ({ image: createRgbaImage(1, 1), images: [createRgbaImage(1, 1)], calls: 0, elapsedMs: 0, logs: [] }) };
     const base = { gateway: inner, canvas: {} as ToolContext["canvas"], scripts } satisfies ToolContext;
 
     const ctx = scopeToolContext(base, 3);

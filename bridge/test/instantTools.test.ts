@@ -35,7 +35,7 @@ function service(registrars: ToolRegistrar[] = [dummyTools]) {
   const base: ToolContext = {
     gateway,
     canvas: {} as ToolContext["canvas"],
-    scripts: { run: async () => ({ image: createRgbaImage(1, 1), calls: 0, elapsedMs: 0 }) },
+    scripts: { run: async () => ({ image: createRgbaImage(1, 1), images: [createRgbaImage(1, 1)], calls: 0, elapsedMs: 0, logs: [] }) },
   };
   return new InstantToolService((sprite) =>
     createMcpServer(sprite === undefined ? base : scopeToolContext(base, sprite), registrars),
