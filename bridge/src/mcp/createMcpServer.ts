@@ -1,5 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import type { ToolContext } from "./ToolContext.js";
+import { ScopedAsepriteGateway } from "../aseprite/ScopedAsepriteGateway.js";
+import { CanvasService } from "../canvas/CanvasService.js";
+import type { ToolContext, ToolRegistrar } from "./ToolContext.js";
 import { TOOL_REGISTRARS } from "./tools/index.js";
 
 const INSTRUCTIONS = `
@@ -21,11 +23,24 @@ avoid stray single pixels and noisy dithering, light consistently from one direc
 and keep silhouettes readable at 1x zoom.
 `.trim();
 
-export function createMcpServer(ctx: ToolContext): McpServer {
+/**
+ * One server per request (stateless HTTP) or per instant tool call; `ctx` decides which
+ * sprite the tools act on. `registrars` is only overridden by tests.
+ */
+export function createMcpServer(ctx: ToolContext, registrars: readonly ToolRegistrar[] = TOOL_REGISTRARS): McpServer {
   const server = new McpServer(
     { name: "aseprite-mcp", version: "1.0.0" },
     { instructions: INSTRUCTIONS },
   );
-  for (const register of TOOL_REGISTRARS) register(server, ctx);
+  for (const register of registrars) register(server, ctx);
   return server;
+}
+
+/**
+ * The same tools, bound to one sprite. The canvas is rebuilt on the scoped gateway
+ * because it reads and writes through whatever gateway it was given.
+ */
+export function scopeToolContext(base: ToolContext, sprite: number): ToolContext {
+  const gateway = new ScopedAsepriteGateway(base.gateway, sprite);
+  return { ...base, gateway, canvas: new CanvasService(gateway) };
 }
