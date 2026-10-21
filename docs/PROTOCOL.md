@@ -9,6 +9,13 @@ Aseprite → bridge   {"id": 7, "result": {...}}            or {"id": 7, "error"
 either direction    {"event": "chat", ...}                 (no id: fire-and-forget)
 ```
 
+MCP clients reach the bridge over Streamable HTTP (stateless):
+
+- `http://127.0.0.1:7800/mcp` – the tools act on Aseprite's active sprite (external clients).
+- `http://127.0.0.1:7800/mcp/sprite/<id>` – the same tools bound to one sprite. The in-Aseprite
+  chat runs every model job on such an endpoint, so a job keeps drawing into its sprite while
+  the user switches tabs and parallel jobs never collide.
+
 The Lua side is deliberately thin: it moves pixels and calls Aseprite APIs. Every
 pixel algorithm (compositing, selection masks, effects, color conversion) lives in
 the bridge, where it is fast, typed and unit-tested.
@@ -152,7 +159,7 @@ Bridge → Aseprite:
   event: "chat_send",
   text: string,                      // what the user typed (may be empty for some actions)
   action?: ChatAction,               // default "chat"
-  options?: ChatOptions,
+  options?: ChatOptions,             // Aseprite may encode an empty table as [] – treated as {}
   selection?: Rect,                  // only when "use selection" is on and something is selected
   sprite?: number,                   // sprite.id of the active sprite when the message was sent
 }
@@ -168,8 +175,8 @@ type ChatAction =
   | "directions";     // the same character facing 4 or 8 directions (options.directions)
 
 interface ChatOptions {
-  provider?: string;                 // ProviderInfo.id, default "claude-code"
-  model?: string;                    // provider model id ("opus", "sonnet", "gpt-5", ...)
+  provider?: string;                 // ProviderInfo.id: claude-code (default), codex, gemini-cli, openai, anthropic, ollama
+  model?: string;                    // any id from that provider's ProviderInfo.models; default: its defaultModel
   effort?: "low" | "medium" | "high" | "xhigh" | "max";
   style?: StyleId;
   palette?: PaletteId;               // "auto" | "current" | a preset id
@@ -177,15 +184,15 @@ interface ChatOptions {
   target?: "new_sprite" | "new_layer" | "active_layer";
   view?: "front" | "side" | "three_quarter" | "top_down" | "isometric";
   directions?: 4 | 8;
-  count?: number;                    // variations: 2-4
-  items?: string[];                  // batch: one prompt per item
+  count?: number;                    // variations: 2-4 (default 3); without text = variations of the open sprite
+  items?: string[];                  // batch: one prompt per item; palette "auto" becomes the style's preset so the set matches
   outline?: boolean;                 // ask for a 1px dark outline
   background?: "transparent" | "solid";
   animation?: {
     preset: "idle" | "walk" | "run" | "jump" | "attack" | "hurt" | "death" | "custom";
-    frames: number;                  // 2-16
-    frameMs: number;                 // duration per frame
-    loop: boolean;
+    frames?: number;                 // 2-16; frames/frameMs/loop default per preset (e.g. walk 8 x 100 ms)
+    frameMs?: number;                // duration per frame
+    loop?: boolean;
   };
   autoReview?: boolean;              // one extra look-and-fix pass at the end
 }
@@ -198,7 +205,9 @@ type PaletteId = "auto" | "current" | "pico8" | "sweetie16" | "endesga32" | "end
 ### `tool_run` → `tool_result`
 
 Instant, non-AI tools from the Tools tab. The bridge calls the MCP tool of the same
-name in-process and answers `{event: "tool_result", requestId, ok, text}`.
+name in-process, bound to `sprite`, and answers `{event: "tool_result", requestId, ok, text}`
+(`requestId` is echoed as sent, string or number). Colors are `"#rrggbb"` or `"#rrggbbaa"`.
+Send `{steps: 1}` rather than an empty table for undo/redo (Aseprite encodes `{}` as `[]`).
 
 Allowed tools and their arguments (all accept the common target `layer?`,
 `frames?: "current" | "all" | number[]`, `selectionOnly?: boolean`):
@@ -211,8 +220,8 @@ Allowed tools and their arguments (all accept the common target `layer?`,
 | `apply_palette` | `palette` (PaletteId or `#rrggbb[]`), `dither?`, `setSpritePalette?: boolean` |
 | `adjust_colors` | `hue?` (-180..180), `saturation?`, `lightness?`, `brightness?`, `contrast?` (-100..100), `invert?`, `grayscale?` |
 | `replace_color` | `from`, `to`, `tolerance?` |
-| `cleanup_pixels` | `minNeighbors?` (default 1: removes isolated single pixels) |
-| `transform_layer` | `op: "flip_h" \| "flip_v" \| "rotate_90" \| "rotate_180" \| "rotate_270" \| "shift"`, `dx?`, `dy?`, `wrap?` |
+| `cleanup_pixels` | `minNeighbors?` (default 1: removes isolated single pixels), `noise?: "similar" \| "all" \| "off"` (default "similar": only near-identical single-pixel noise, so 1 px highlights survive) |
+| `transform_layer` | `op: "flip_h" \| "flip_v" \| "rotate_90" \| "rotate_180" \| "rotate_270" \| "shift"`, `dx?`, `dy?`, `wrap?` (with `selectionOnly` the transform happens inside the selection's bounds) |
 | `drop_shadow` | `dx?`, `dy?`, `color?` |
 | `undo` / `redo` | `steps?` |
 
@@ -222,7 +231,7 @@ Sent right after `hello` and whenever provider availability changes:
 
 ```ts
 { event: "bridge_info", version: string, providers: ProviderInfo[], defaultProvider: string }
-ProviderInfo = { id, label, models: [{id, label}], efforts: string[], available, note?, supportsImages }
+ProviderInfo = { id, label, models: [{id, label}], efforts: string[], available, note?, supportsImages, defaultModel? }
 ```
 
 ### `chat` updates
@@ -235,3 +244,12 @@ ProviderInfo = { id, label, models: [{id, label}], efforts: string[], available,
 - `error` `{text}`
 - `busy` `{busy}` – a run started/finished
 - `done` `{stats: {durationMs, turns?, costUsd?}}` – after a successful run
+
+### Development only: `ui_debug`
+
+With `ASEPRITE_MCP_DEV=1` the bridge opens a loopback endpoint (`127.0.0.1:7802`, see
+`bridge/src/dev/devServer.ts`) that injects chat events and forwards
+`{event: "ui_debug", action: "open"|"tab"|"set"|"click"|"close", tab?, id?, value?}` to the window,
+which answers `{event: "ui_debug_result", action, ok, error?}`. The extension ignores it unless
+`devMode = true` is set in its preferences (`__pref.lua`); synthetic input can't drive Aseprite's
+UI on every platform, so this is how screenshots and end-to-end tests are automated.
