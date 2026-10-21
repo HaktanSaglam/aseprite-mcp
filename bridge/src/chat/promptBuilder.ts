@@ -16,6 +16,8 @@ window that renders plain text only.
 - Do the work with the aseprite tools instead of describing it. Never ask for permission
   to draw; every edit is a single undo step for the user.
 - When editing existing art, read it first and match its palette, outline and shading style.
+- Be fast: use draw_script for anything bigger than ~48x48 and finish a scene in a few
+  scripts; reserve write_pixels for small sprites and final touch-ups.
 `.trim();
 
 function selectionNote(s: Rect): string {

@@ -9,23 +9,6 @@ export function createRgbaImage(width: number, height: number): RgbaImage {
   return { width, height, data: new Uint8Array(width * height * 4) };
 }
 
-/** The Aseprite extension sends pixels as "rrggbbaa" per pixel; hex keeps the Lua side trivial. */
-export function rgbaFromHex(hex: string, width: number, height: number): RgbaImage {
-  const expected = width * height * 8;
-  if (hex.length !== expected) {
-    throw new Error(`Pixel payload length ${hex.length} does not match ${width}x${height}`);
-  }
-  const image = createRgbaImage(width, height);
-  for (let i = 0; i < image.data.length; i++) {
-    image.data[i] = Number.parseInt(hex.substr(i * 2, 2), 16);
-  }
-  return image;
-}
-
-export function rgbaToHex(image: RgbaImage): string {
-  let out = "";
-  for (const byte of image.data) {
-    out += byte.toString(16).padStart(2, "0");
-  }
-  return out;
+export function cloneImage(image: RgbaImage): RgbaImage {
+  return { width: image.width, height: image.height, data: new Uint8Array(image.data) };
 }

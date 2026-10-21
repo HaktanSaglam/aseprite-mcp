@@ -1,6 +1,6 @@
 {
   "name": "aseprite-mcp-bridge",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Bridge between Aseprite and Claude via MCP",
   "license": "MIT",
   "type": "module",
@@ -9,7 +9,9 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "dev": "tsx watch src/index.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.test.json",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "engines": {
     "node": ">=20"
@@ -17,6 +19,7 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.0",
     "pngjs": "^7.0.0",
+    "quickjs-emscripten": "^0.32.0",
     "ws": "^8.22.0",
     "zod": "^4.6.5"
   },
@@ -25,6 +28,7 @@
     "@types/pngjs": "^6.0.5",
     "@types/ws": "^8.18.2",
     "tsx": "^4.23.15",
-    "typescript": "^7.0.2"
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.5"
   }
 }

@@ -1,50 +1,59 @@
 -- Entry point: wires modules together and registers menu commands.
 
-local connection
-
+local VERSION = "1.0.0"
+local PROTOCOL = 2
 local DEFAULT_PORT = 7801
 
-local function load(plugin, file)
-  return dofile(app.fs.joinPath(plugin.path, file))
-end
+local connection
 
-local function bridgeUrl(plugin)
-  return "ws://127.0.0.1:" .. tostring(plugin.preferences.port)
+local function bridgeUrl(prefs)
+  return "ws://127.0.0.1:" .. tostring(prefs.port)
 end
 
 function init(plugin)
-  plugin.preferences.port = plugin.preferences.port or DEFAULT_PORT
+  local prefs = plugin.preferences
+  prefs.port = prefs.port or DEFAULT_PORT
 
-  connection = load(plugin, "connection.lua")
-  local pixels = load(plugin, "pixels.lua")
-  local handlers = load(plugin, "handlers.lua")(pixels)
-  local textRender = load(plugin, "text_render.lua")
-  local chat = load(plugin, "chat_dialog.lua")(connection, plugin.preferences, textRender)
+  local function load(file)
+    return dofile(app.fs.joinPath(plugin.path, file))
+  end
 
-  connection.start(bridgeUrl(plugin), handlers.dispatch)
+  local U = load("core/util.lua")
+  connection = load("connection.lua")
+  local rpc = load("rpc/init.lua")(load, U)
+  local window = load("ui/main_window.lua")({
+    connection = connection,
+    prefs = prefs,
+    load = load,
+    version = VERSION,
+  })
+
+  local hello = { extensionVersion = VERSION, protocol = PROTOCOL }
+  local function connect()
+    connection.start(bridgeUrl(prefs), rpc.dispatch, hello)
+  end
+  connect()
 
   plugin:newMenuGroup{
-    id = "claude_ai_group",
-    title = "Claude AI",
+    id = "aseprite_mcp_group",
+    title = "Aseprite MCP",
     group = "edit_fx",
   }
 
-  -- The chat window also shows the bridge status; a modal alert would block
-  -- incoming bridge requests for as long as it stays open.
+  -- The window also shows the bridge status; a modal alert would block incoming
+  -- bridge requests for as long as it stays open.
   plugin:newCommand{
-    id = "ClaudeChat",
-    title = "Claude Chat...",
-    group = "claude_ai_group",
-    onclick = function() chat.open() end,
+    id = "AsepriteMcpAssistant",
+    title = "AI Assistant...",
+    group = "aseprite_mcp_group",
+    onclick = function() window.open() end,
   }
 
   plugin:newCommand{
-    id = "ClaudeBridgeReconnect",
+    id = "AsepriteMcpReconnect",
     title = "Reconnect Bridge",
-    group = "claude_ai_group",
-    onclick = function()
-      connection.start(bridgeUrl(plugin), handlers.dispatch)
-    end,
+    group = "aseprite_mcp_group",
+    onclick = connect,
   }
 end
 

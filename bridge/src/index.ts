@@ -1,11 +1,13 @@
 import { AsepriteSocket } from "./aseprite/AsepriteSocket.js";
 import { RpcAsepriteGateway } from "./aseprite/RpcAsepriteGateway.js";
+import { CanvasService } from "./canvas/CanvasService.js";
 import { ChatService } from "./chat/ChatService.js";
 import { CHAT_SYSTEM_PROMPT } from "./chat/promptBuilder.js";
 import { loadConfig } from "./config.js";
 import { ClaudeCliRunner } from "./llm/ClaudeCliRunner.js";
 import { createMcpServer } from "./mcp/createMcpServer.js";
 import { startMcpHttpServer } from "./mcp/httpServer.js";
+import { QuickJsScriptRunner } from "./script/QuickJsScriptRunner.js";
 
 // Composition root: the only place that knows which concrete classes are used.
 async function main(): Promise<void> {
@@ -20,8 +22,10 @@ async function main(): Promise<void> {
   await socket.start();
   const gateway = new RpcAsepriteGateway(socket);
 
+  // One runner for all requests: it caches the compiled QuickJS WebAssembly module.
+  const tools = { gateway, canvas: new CanvasService(gateway), scripts: new QuickJsScriptRunner() };
   const http = await startMcpHttpServer({ host: config.host, port: config.mcpPort }, () =>
-    createMcpServer(gateway),
+    createMcpServer(tools),
   );
 
   const runner = new ClaudeCliRunner({
