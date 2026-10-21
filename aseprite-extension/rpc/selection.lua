@@ -37,10 +37,12 @@ return function(U)
     }
   end
 
+  -- Adding Rectangles directly is ~100x faster than adding one Selection per rect
+  -- (32k rects: 20 ms vs 2.5 s), which matters for color/magic-wand masks.
   local function fromRects(rects)
     local s = Selection()
     for _, r in ipairs(rects or {}) do
-      s:add(Selection(Rectangle(math.floor(r[1]), math.floor(r[2]), math.floor(r[3]), math.floor(r[4]))))
+      s:add(Rectangle(math.floor(r[1]), math.floor(r[2]), math.floor(r[3]), math.floor(r[4])))
     end
     return s
   end

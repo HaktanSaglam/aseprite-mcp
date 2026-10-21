@@ -138,6 +138,22 @@ test("selection ops", function()
   eq(call("read_selection", {}).isEmpty, true, "empty read")
 end)
 
+test("set_selection with many rects (color masks) is exact and fast", function()
+  call("create_sprite", { width = 64, height = 64 })
+  -- checkerboard: the worst case for run merging, 2048 one-pixel rects
+  local rects = {}
+  for y = 0, 63 do
+    for x = y % 2, 63, 2 do rects[#rects + 1] = { x, y, 1, 1 } end
+  end
+  local t0 = os.clock()
+  local r = call("set_selection", { op = "replace", rects = rects })
+  local ms = (os.clock() - t0) * 1000
+  eq(r.bounds.width, 64, "bounds")
+  local read = call("read_selection", { x = 0, y = 0, width = 4, height = 2 })
+  eq(read.mask, "10100101", "checkerboard mask")
+  if ms > 500 then error(string.format("set_selection took %.0f ms for %d rects", ms, #rects)) end
+end)
+
 test("layer ops", function()
   call("create_sprite", { width = 4, height = 4 })
   call("layer_op", { op = "add", name = "Group", isGroup = true })
