@@ -7,5 +7,5 @@ return function(form, ui, C)
   form:number{ id = "animFrameMs", key = "animFrameMs", label = "Frame ms" }
   form:check{ id = "animLoop", key = "animLoop", label = "Playback", text = "Loop" }
   form:entry{ id = "animNotes", key = "animNotes", label = "Notes", placeholder = "e.g. cape flutters, sword trail" }
-  form:button{ id = "animRun", text = "Animate", focus = true, onclick = ui.animate }
+  form:button{ id = "animRun", text = "Animate", onclick = ui.animate }
 end

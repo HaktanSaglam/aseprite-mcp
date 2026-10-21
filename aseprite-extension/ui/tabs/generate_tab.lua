@@ -12,7 +12,8 @@ return function(form, ui, C)
   form:check{ id = "genOutline", key = "genOutline", label = "Options", text = "1px outline" }
   form:check{ id = "genTransparent", key = "genTransparent", text = "Transparent background" }
 
-  form:button{ id = "genGenerate", text = "Generate", focus = true, onclick = ui.generate }
+  -- No focus = true (Enter target) here: see chat_tab.lua.
+  form:button{ id = "genGenerate", text = "Generate", onclick = ui.generate }
   form:button{ id = "genDir4", text = "4 directions", onclick = function() ui.directions(4) end }
   form:button{ id = "genDir8", text = "8 directions", onclick = function() ui.directions(8) end }
 

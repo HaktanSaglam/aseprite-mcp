@@ -313,6 +313,9 @@ return function(ctx)
 
   handlers.sendChat = function()
     local text = form:value("chatInput") or ""
+    -- Send is the Enter target, and Enter also arrives from outside the window: with
+    -- nothing typed there is nothing to say, so stay quiet.
+    if not text:find("%S") then return focusChat(false) end
     local sent = startRun(function(s, ai, c) return R.chat(text, s, ai, c) end)
     focusChat(sent ~= nil)
   end

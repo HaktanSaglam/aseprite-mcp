@@ -124,7 +124,7 @@ return function(C)
   function R.generate(s, ai, ctx)
     local text = trim(s.genPrompt)
     if text == "" then
-      -- Enter in the Items box also lands here (Generate is the tab's default button).
+      -- Likely meant the batch button right below the Items box.
       if #R.parseItems(s.genBatch) > 0 then
         return nil, 'Prompt is empty. To draw the Items list, press "Generate batch".'
       end
