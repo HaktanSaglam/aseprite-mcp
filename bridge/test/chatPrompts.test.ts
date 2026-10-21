@@ -183,7 +183,7 @@ describe("animatePrompt", () => {
     expect(prompt).toMatch(/8 frames, 100 ms per frame, looping/);
     expect(prompt).toMatch(/Frames 1-8 are already set up.*tag "walk"/);
     expect(prompt).toMatch(/no jitter/);
-    expect(prompt).toContain('pixel_art_guide {"topic":"animation"}');
+    expect(prompt).toContain('pixel-art guide, "animation" (already loaded');
   });
 
   it("asks the model to add frames when the sprite already had several", () => {
@@ -226,5 +226,23 @@ describe("parallel prompts", () => {
     expect(prompt).toMatch(/Draw frame 1 \(facing down/);
     expect(prompt).toContain('transform_layer {"op":"flip_h","frames":[7]}');
     expect(prompt).not.toMatch(/View: side/); // directions define the view
+  });
+});
+
+describe("guide inlining and reply language", () => {
+  it("picks a guide topic from English and Turkish subjects", async () => {
+    const { guideTopicFor } = await import("../src/chat/guideSelector.js");
+    expect(guideTopicFor("generate", "a knight with a sword")).toBe("characters");
+    expect(guideTopicFor("generate", "kırmızı bir iksir")).toBe("items_icons");
+    expect(guideTopicFor("generate", "forest at dusk with a cabin")).toBe("environments");
+    expect(guideTopicFor("generate", "grass tileset")).toBe("tiles");
+    expect(guideTopicFor("animate", "")).toBe("animation");
+    expect(guideTopicFor("chat", "a knight")).toBeUndefined();
+  });
+
+  it("inlines the topic in generation prompts and names the reply language", () => {
+    const prompt = generatePrompt({ text: "şövalye", options: {}, info: undefined });
+    expect(prompt).toContain('pixel-art guide, "characters"');
+    expect(prompt).toContain('Reply language: the language of the user\'s request ("şövalye")');
   });
 });

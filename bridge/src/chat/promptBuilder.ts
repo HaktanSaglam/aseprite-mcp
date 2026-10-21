@@ -6,6 +6,7 @@ import {
   type ChatOptions,
   type View,
 } from "./chatSchema.js";
+import { guideReference, guideTopicFor } from "./guideSelector.js";
 import { detailForSize, PALETTE_LABELS, STYLE_SPECS, type StyleSpec } from "./styleSpecs.js";
 
 /**
@@ -179,9 +180,18 @@ The subject should fill most of the canvas, with a 1-2 px margin.
 const GUIDE_HINT =
   'If you are unsure how to draw this subject, call pixel_art_guide once before drawing (e.g. {"topic":"characters"}, "items_icons", "environments" or "tiles").';
 
+/** Models answer in whatever language dominates the prompt, which is ours, not the user's. */
+function replyLanguage(text: string): string {
+  const quoted = text.trim().replace(/\s+/g, " ").slice(0, 80);
+  return quoted
+    ? `Reply language: the language of the user's request ("${quoted}").`
+    : "Reply language: the language the user wrote in earlier, else English.";
+}
+
 /** Everything a generation prompt shares after its first line. */
-function generationBody(ctx: PromptContext, includeView = true): (string | undefined)[] {
+function generationBody(ctx: PromptContext, includeView = true, topicText = ctx.text): (string | undefined)[] {
   const size = ctx.info ?? ctx.options.size ?? DEFAULT_SPRITE_SIZE;
+  const guide = guideReference(guideTopicFor("generate", topicText));
   return [
     layerSection(ctx),
     styleSection(ctx.options, true),
@@ -189,9 +199,10 @@ function generationBody(ctx: PromptContext, includeView = true): (string | undef
     lookSection(ctx.options, true, includeView),
     `Detail: ${detailForSize(size.width, size.height)}`,
     CRAFT,
-    GUIDE_HINT,
+    guide ?? GUIDE_HINT,
     finishSection(ctx.options),
     ctx.canvas,
+    replyLanguage(ctx.text),
   ];
 }
 
@@ -206,6 +217,7 @@ export function chatPrompt(ctx: PromptContext): string {
     explicitOptions(ctx),
     ctx.canvas ??
       `No sprite is open in Aseprite. If the request needs drawing, first create one with create_sprite (${size.width}x${size.height} unless the request implies another size).`,
+    replyLanguage(ctx.text),
   ]);
 }
 
@@ -226,6 +238,7 @@ export function editSelectionPrompt(ctx: PromptContext & { selection: Rect }): s
     ].join("\n"),
     explicitOptions(ctx),
     ctx.canvas,
+    replyLanguage(ctx.text),
   ]);
 }
 
@@ -248,6 +261,7 @@ export function reviewPrompt(ctx: PromptContext): string {
     "Fix on the layers that hold the art, in few calls (draw_script with base:\"current\" for repaints, write_pixels for touch-ups). Then say what you fixed in 1-2 sentences.",
     explicitOptions(ctx),
     ctx.canvas,
+    replyLanguage(ctx.text),
   ]);
 }
 
@@ -273,11 +287,12 @@ export function animatePrompt(ctx: PromptContext, plan: AnimationPlan): string {
       `- Move parts instead of repainting everything: transform_layer ${json({ op: "shift", dx: 0, dy: 1, frames: [2] })} for whole-body bobs; draw_script with base:"current" and frame:k to redraw limbs.`,
       "- Secondary motion (hair, cloth, tails) follows one frame behind the main motion.",
       "- Timing comes from spacing: bigger changes between frames read as faster motion.",
-      `- pixel_art_guide ${json({ topic: "animation" })} has frame-by-frame recipes if you need one.`,
     ].join("\n"),
     finishSection(ctx.options),
     explicitOptions(ctx),
+    guideReference(guideTopicFor("animate", text)),
     ctx.canvas,
+    replyLanguage(ctx.text),
   ]);
 }
 
@@ -295,7 +310,7 @@ export function batchItemPrompt(ctx: PromptContext, item: string, index: number,
   return join([
     `Create pixel art: ${item}`,
     `This is item ${index} of ${total} in a matching set${theme ? ` (${theme})` : ""}. The other items are drawn in parallel from the same rules, so follow them exactly (same palette, outline, light from the top-left, proportions and level of detail) and the set will look consistent.`,
-    ...generationBody(ctx),
+    ...generationBody(ctx, true, `${item} ${theme}`),
   ]);
 }
 
@@ -310,6 +325,6 @@ export function directionsPrompt(ctx: PromptContext, directions: readonly string
       "2. Draw each other frame from it: same height, proportions, palette, outline and details, feet on the same baseline. Turn the character, don't redesign it.",
       `3. Left-facing frames can mirror the right-facing ones: copy that frame's pixels into the left frame (read_pixels, then write_pixels with frame k) and flip it with transform_layer ${json({ op: "flip_h", frames: [directions.indexOf("left") + 1] })}; then fix asymmetric details such as the weapon hand.`,
     ].join("\n"),
-    ...generationBody(ctx, false),
+    ...generationBody(ctx, false, "character"),
   ]);
 }
