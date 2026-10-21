@@ -23,7 +23,10 @@ function init(plugin)
   connection = load("connection.lua")
   local rpc = load("rpc/init.lua")(load, U)
 
-  local hello = { extensionVersion = VERSION, protocol = PROTOCOL }
+  -- instance tells the bridge whether a hello comes from a reconnect of this same
+  -- Aseprite (keep conversations) or a restarted one (sprite ids start over).
+  local instance = string.format("%d-%06d", os.time(), math.random(0, 999999))
+  local hello = { extensionVersion = VERSION, protocol = PROTOCOL, instance = instance }
   local function connect()
     connection.start(bridgeUrl(prefs), rpc.dispatch, hello)
   end

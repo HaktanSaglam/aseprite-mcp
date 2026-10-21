@@ -29,6 +29,8 @@ export class ChatService {
   private current?: AbortController;
   /** A reset during a run: the run may still store its session while it winds down. */
   private resetWhenIdle = false;
+  /** hello.instance of the connected Aseprite, to tell reconnects from restarts. */
+  private asepriteInstance?: string;
 
   constructor(private readonly deps: ChatServiceDeps) {}
 
@@ -42,11 +44,15 @@ export class ChatService {
 
   private handle(event: AsepriteEvent): void {
     switch (event.event) {
-      case "hello":
-        // Sprite ids restart with Aseprite, so old conversations could attach to the wrong sprite.
-        this.forgetSessions();
+      case "hello": {
+        // Sprite ids restart with Aseprite, so old conversations could attach to the wrong
+        // sprite; a reconnect of the same Aseprite (same instance) keeps them.
+        const instance = typeof event.instance === "string" ? event.instance : undefined;
+        if (instance === undefined || instance !== this.asepriteInstance) this.forgetSessions();
+        this.asepriteInstance = instance;
         void this.sendBridgeInfo();
         return;
+      }
       case "chat_send": {
         const parsed = parseChatSend(event);
         if (!parsed.ok) return this.push({ kind: "error", text: parsed.error });

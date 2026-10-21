@@ -68,6 +68,16 @@ describe("ChatService: bridge_info", () => {
     events.emit({ event: "hello" });
     expect(sessions.get("claude-code", 1)).toBeUndefined();
   });
+
+  it("keeps conversations when the same Aseprite instance reconnects", async () => {
+    const { events, sessions } = harness();
+    events.emit({ event: "hello", instance: "a" });
+    sessions.set("claude-code", 1, "kept");
+    events.emit({ event: "hello", instance: "a" });
+    expect(sessions.get("claude-code", 1)).toBe("kept");
+    events.emit({ event: "hello", instance: "b" });
+    expect(sessions.get("claude-code", 1)).toBeUndefined();
+  });
 });
 
 describe("ChatService: chat", () => {
