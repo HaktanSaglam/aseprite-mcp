@@ -1,0 +1,170 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bridge:
+    name: Bridge · ${{ matrix.os }} · Node ${{ matrix.node }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        node: [20, 22, 24]
+    defaults:
+      run:
+        working-directory: bridge
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+          cache-dependency-path: bridge/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - run: npm run typecheck
+      - name: Test
+        # vitest 5 needs Node 22.12+. The bridge itself supports Node 20, which is
+        # covered by typecheck, build and the module load check below.
+        if: matrix.node != 20
+        run: npm test
+      - run: npm run build
+      - name: CLI and module load check
+        run: |
+          node bin/aseprite-mcp.js --version
+          node bin/aseprite-mcp.js print-config claude-code
+          node --input-type=module -e "await import('./dist/mcp/createMcpServer.js'); console.log('dist modules load')"
+
+  lua:
+    name: Lua syntax
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Lua 5.4
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends lua5.4
+      - name: luac -p every Lua file
+        # Aseprite embeds Lua 5.4; the headless rpc tests need Aseprite itself, see CONTRIBUTING.md.
+        run: find aseprite-extension -name '*.lua' -print0 | xargs -0 -n1 luac5.4 -p
+
+  scripts:
+    name: Install scripts lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: ShellCheck
+        run: shellcheck scripts/*.sh
+      - name: Parse PowerShell scripts
+        shell: pwsh
+        run: |
+          $failed = $false
+          foreach ($file in Get-ChildItem scripts -Filter *.ps1) {
+            $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile($file.FullName, [ref]$null, [ref]$errors)
+            foreach ($e in $errors) {
+              Write-Host "::error file=scripts/$($file.Name),line=$($e.Extent.StartLineNumber)::$($e.Message)"
+              $failed = $true
+            }
+          }
+          if ($failed) { exit 1 }
+          Write-Host 'All PowerShell scripts parse.'
+
+  extension:
+    name: Package extension · ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - name: Package (bash + zip)
+        if: runner.os != 'Windows'
+        run: scripts/package-extension.sh
+      - name: Package (Windows PowerShell 5.1)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./scripts/package-extension.ps1
+      - name: Check archive contents
+        shell: pwsh
+        run: |
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $zip = [System.IO.Compression.ZipFile]::OpenRead((Resolve-Path 'dist/aseprite-mcp.aseprite-extension').Path)
+          try { $names = @($zip.Entries | ForEach-Object { $_.FullName }) } finally { $zip.Dispose() }
+          $names | Sort-Object | ForEach-Object { Write-Host "  $_" }
+          foreach ($required in 'package.json', 'main.lua', 'rpc/', 'rpc/init.lua') {
+            if ($names -notcontains $required) { throw "missing entry: $required" }
+          }
+          $unexpected = @($names | Where-Object { $_ -like 'tests*' -or $_ -match '(^|/)\.' -or $_.Contains('\') })
+          if ($unexpected.Count) { throw "unexpected entries: $($unexpected -join ', ')" }
+      - uses: actions/upload-artifact@v7
+        if: runner.os == 'Linux'
+        with:
+          name: aseprite-mcp.aseprite-extension
+          path: dist/aseprite-mcp.aseprite-extension
+          if-no-files-found: error
+
+  install:
+    # Runs the one-command installers non-interactively, then starts the real bridge and
+    # checks it with `aseprite-mcp doctor` (Aseprite itself is not available on CI).
+    name: Installer + doctor · ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: bridge/package-lock.json
+      - name: install.sh
+        if: runner.os != 'Windows'
+        run: scripts/install.sh --no-open --no-service --no-claude
+      - name: Bridge + doctor (bash)
+        if: runner.os != 'Windows'
+        run: |
+          node bridge/bin/aseprite-mcp.js > bridge.log 2>&1 &
+          bridge_pid=$!
+          for _ in $(seq 1 20); do
+            node bridge/bin/aseprite-mcp.js doctor > /dev/null && break
+            sleep 1
+          done
+          node bridge/bin/aseprite-mcp.js doctor || { cat bridge.log; exit 1; }
+          kill "$bridge_pid"
+      - name: install.ps1 with the background bridge (Windows PowerShell 5.1)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./scripts/install.ps1 -NoOpen -Service -NoClaude
+      - name: Doctor + uninstall (Windows)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $ok = $false
+          foreach ($i in 1..20) {
+            node bridge/bin/aseprite-mcp.js doctor | Out-Null
+            if ($LASTEXITCODE -eq 0) { $ok = $true; break }
+            Start-Sleep -Seconds 1
+          }
+          node bridge/bin/aseprite-mcp.js doctor
+          if (-not $ok) {
+            Get-Content (Join-Path $env:LOCALAPPDATA 'aseprite-mcp\bridge.log') -ErrorAction SilentlyContinue
+            exit 1
+          }
+          ./scripts/uninstall-service.ps1
+          Start-Sleep -Seconds 2
+          node bridge/bin/aseprite-mcp.js doctor | Out-Null
+          if ($LASTEXITCODE -eq 0) { throw 'the bridge is still running after uninstall-service.ps1' }
+          exit 0

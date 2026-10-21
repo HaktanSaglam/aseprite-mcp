@@ -1,0 +1,47 @@
+name: Feature request
+description: Suggest a new tool, assistant feature or integration.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What do you want to do?
+      description: Describe the pixel-art task or workflow, not only the solution. What is hard or impossible today?
+      placeholder: "I animate walk cycles and have to fix the feet on every frame by hand..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: How could Aseprite MCP help?
+      description: A new MCP tool, an option in the assistant, a new AI provider, a client config...
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - MCP tools (drawing, layers, palettes, effects, ...)
+        - In-Aseprite assistant UI
+        - AI providers / models
+        - MCP client support
+        - Installation and setup
+        - Documentation
+        - Something else
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you considered
+
+  - type: checkboxes
+    id: contribute
+    attributes:
+      label: Contributing
+      options:
+        - label: I would like to implement this myself (see CONTRIBUTING.md)

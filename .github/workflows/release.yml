@@ -1,0 +1,96 @@
+name: Release
+
+# Push a tag like v1.0.0 (after updating the versions and CHANGELOG.md, see CONTRIBUTING.md)
+# to build, test and publish a GitHub release with:
+#   aseprite-mcp.aseprite-extension   the Aseprite extension (stable name, so
+#                                      releases/latest/download/aseprite-mcp.aseprite-extension works)
+#   aseprite-mcp-bridge-<version>.tgz  the bridge as an npm package: npm install -g <file>
+#   SHA256SUMS.txt
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: bridge/package-lock.json
+
+      - name: Check that versions match the tag
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          for file in bridge/package.json aseprite-extension/package.json; do
+            actual="$(node -p "require('./$file').version")"
+            if [ "$actual" != "$version" ]; then
+              echo "::error file=$file::version is $actual but the tag is $GITHUB_REF_NAME"
+              exit 1
+            fi
+          done
+          if ! grep -q "^## \[$version\]" CHANGELOG.md; then
+            echo "::error file=CHANGELOG.md::no '## [$version]' section"
+            exit 1
+          fi
+
+      - name: Build and test the bridge
+        working-directory: bridge
+        run: |
+          npm ci --no-audit --no-fund
+          npm run typecheck
+          npm test
+          npm run build
+
+      - name: Package the extension
+        run: scripts/package-extension.sh
+
+      - name: Pack the bridge
+        run: |
+          cp LICENSE bridge/
+          if [ -f README.md ]; then cp README.md bridge/; fi
+          (cd bridge && npm pack --pack-destination ../dist)
+
+      - name: Smoke test the packed bridge
+        run: |
+          npm install --global ./dist/aseprite-mcp-bridge-*.tgz
+          aseprite-mcp --version
+          aseprite-mcp print-config claude-code
+
+      - name: Release notes from CHANGELOG.md
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          awk -v heading="## [$version]" '
+            index($0, heading) == 1 { found = 1; next }
+            found && (/^## \[/ || /^\[[^]]+\]: /) { exit }
+            found { print }
+          ' CHANGELOG.md > dist/RELEASE_NOTES.md
+          if ! grep -q '[^[:space:]]' dist/RELEASE_NOTES.md; then
+            echo "::error file=CHANGELOG.md::the [$version] section is empty"
+            exit 1
+          fi
+          cat dist/RELEASE_NOTES.md
+
+      - name: Checksums
+        working-directory: dist
+        run: sha256sum aseprite-mcp.aseprite-extension aseprite-mcp-bridge-*.tgz | tee SHA256SUMS.txt
+
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          flags=()
+          if [[ "$GITHUB_REF_NAME" == *-* ]]; then flags+=(--prerelease); fi
+          gh release create "$GITHUB_REF_NAME" \
+            --title "Aseprite MCP $GITHUB_REF_NAME" \
+            --notes-file dist/RELEASE_NOTES.md \
+            --verify-tag \
+            "${flags[@]}" \
+            dist/aseprite-mcp.aseprite-extension \
+            dist/aseprite-mcp-bridge-*.tgz \
+            dist/SHA256SUMS.txt
