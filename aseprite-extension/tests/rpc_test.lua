@@ -238,4 +238,5 @@ test("export png and gif", function()
 end)
 
 print(string.format("%d passed, %d failed", passed, failed))
-if failed > 0 then os.exit(1) end
+-- os.exit is disabled in Aseprite's Lua; a raised error makes the run fail instead.
+if failed > 0 then error(failed .. " test(s) failed") end

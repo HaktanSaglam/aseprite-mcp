@@ -1,12 +1,8 @@
--- Chat tab: the conversation log, the message box and the quick AI choices.
+-- Chat tab: the message box and the quick AI choices. The conversation log itself sits
+-- above the tabs (see main_window.build) because tab pages don't hide canvases.
 -- ui: handlers and option sources from ui/main_window.lua.
 
 return function(form, ui)
-  form:canvas{
-    id = "log", width = 340, height = 210,
-    onpaint = ui.paintLog, onwheel = ui.wheelLog,
-  }
-
   -- focus = true makes Send the Enter target for the entry. It is the window's only
   -- such button: Enter keys nobody uses (e.g. pressed in the canvas) are offered to
   -- every open window, and a stray Enter must never start a paid generation. Send

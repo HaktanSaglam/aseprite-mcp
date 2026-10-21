@@ -137,6 +137,10 @@ return function(C, S)
     }
   end
 
+  function Form:newrow()
+    self.dlg:newrow()
+  end
+
   function Form:separator(text)
     self.dlg:separator{ text = text }
   end

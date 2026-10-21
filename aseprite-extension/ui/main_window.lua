@@ -530,7 +530,15 @@ return function(ctx)
     shownSprite = app.sprite and app.sprite.id or nil
     shownToolText = nil
 
-    form:canvas{ id = "header", height = Header.HEIGHT, vexpand = false, onpaint = paintHeader }
+    -- Aseprite 1.3 places widgets of one row side by side and tab pages never hide
+    -- canvases, so both canvases live above the tabs, each on its own row.
+    form:canvas{ id = "header", height = Header.HEIGHT, hexpand = true, vexpand = false, onpaint = paintHeader }
+    form:newrow()
+    form:canvas{
+      id = "log", width = 340, height = 190, hexpand = true, vexpand = true,
+      onpaint = handlers.paintLog, onwheel = handlers.wheelLog,
+    }
+    form:newrow()
     local tabbed = hasTabs(d)
     for _, tab in ipairs(TABS) do
       -- Without tab support (Aseprite < 1.3) the sections are stacked instead.
@@ -538,9 +546,8 @@ return function(ctx)
       tab.build(form, handlers, C)
     end
     if tabbed then
-      -- vexpand lets the pages (and with them the chat log) grow when the user makes
-      -- the window taller; tabs don't expand by default.
-      d:endtabs{ id = "tabs", selected = "tab_" .. selectedTab, vexpand = true, onchange = form:safe(onTabChange) }
+      -- The log (vexpand) takes any extra height when the user makes the window taller.
+      d:endtabs{ id = "tabs", selected = "tab_" .. selectedTab, onchange = form:safe(onTabChange) }
     end
     return d
   end
