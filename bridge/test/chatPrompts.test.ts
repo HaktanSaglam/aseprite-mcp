@@ -27,7 +27,7 @@ const fresh = (options: ChatOptions = {}, text = "a knight"): PromptContext => (
 
 describe("CHAT_SYSTEM_PROMPT", () => {
   it("sets the reply format and the working rules", () => {
-    expect(CHAT_SYSTEM_PROMPT).toMatch(/1-3 short sentences in the user's language/);
+    expect(CHAT_SYSTEM_PROMPT).toMatch(/ONE short sentence \(two at most\) in the user's language/);
     expect(CHAT_SYSTEM_PROMPT).toMatch(/plain text/);
     expect(CHAT_SYSTEM_PROMPT).toMatch(/Never ask for permission/);
     expect(CHAT_SYSTEM_PROMPT).toMatch(/single undo step/);
@@ -49,7 +49,7 @@ describe("generatePrompt", () => {
     expect(prompt).toMatch(/hue-shifted/);
     expect(prompt).toMatch(/Detail: Small sprite/);
     expect(prompt).toContain("Current canvas: sprite #5");
-    expect(prompt).toMatch(/No separate review passes/);
+    expect(prompt).toMatch(/Check the preview your last drawing call returned/);
   });
 
   it("uses style defaults when nothing was chosen", () => {

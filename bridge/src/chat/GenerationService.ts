@@ -41,6 +41,20 @@ interface Job {
 
 const tabName = (info: SpriteInfo) => basename(info.filename) || `sprite #${info.id}`;
 
+/** A short tab title from the request ("a cute green slime monster" → "cute green slime"). */
+export function subjectName(text: string, fallback = "AI sprite"): string {
+  const words = text
+    .replace(/[^\p{L}\p{N}\s-]/gu, " ")
+    .split(/\s+/)
+    .filter((w) => w && !/^(a|an|the|bir)$/i.test(w));
+  let name = "";
+  for (const word of words) {
+    if ((name + " " + word).trim().length > 24) break;
+    name = (name + " " + word).trim();
+  }
+  return name || fallback;
+}
+
 /**
  * variations / batch / directions: the bridge creates the sprites up front and runs one
  * model job per sprite, each bound to its own sprite through a scoped MCP endpoint, so
@@ -66,7 +80,9 @@ export class GenerationService implements IChatRequestHandler {
     const total = request.options.count ?? DEFAULT_VARIATIONS;
     const reference = request.text.trim() ? undefined : await this.referenceOf(request, run);
     const size = request.options.size ?? reference?.size ?? DEFAULT_SPRITE_SIZE;
-    const sprites = await this.createSprites(total, size, run.signal);
+    const subject = subjectName(request.text, "Sprite");
+    const names = Array.from({ length: total }, (_, i) => `${subject} (variation ${i + 1})`);
+    const sprites = await this.createSprites(names, size, run.signal);
     if (!sprites) return { ok: false };
 
     const jobs = sprites.map((info, i) => ({
@@ -88,7 +104,11 @@ export class GenerationService implements IChatRequestHandler {
       ...request.options,
       palette: palette === undefined || palette === "auto" ? STYLE_SPECS[request.options.style ?? "auto"].setPalette : palette,
     };
-    const sprites = await this.createSprites(items.length, request.options.size ?? DEFAULT_SPRITE_SIZE, run.signal);
+    const sprites = await this.createSprites(
+      items.map((item) => subjectName(item)),
+      request.options.size ?? DEFAULT_SPRITE_SIZE,
+      run.signal,
+    );
     if (!sprites) return { ok: false };
 
     const jobs = sprites.map((info, i) => ({
@@ -104,7 +124,12 @@ export class GenerationService implements IChatRequestHandler {
   private async directions(request: ChatSendRequest, run: RequestRun): Promise<RequestOutcome> {
     const order = DIRECTION_ORDER[request.options.directions ?? 4];
     const size = request.options.size ?? DEFAULT_SPRITE_SIZE;
-    const created = await this.deps.gateway.createSprite({ ...size, colorMode: "rgb", frames: order.length });
+    const created = await this.deps.gateway.createSprite({
+      ...size,
+      colorMode: "rgb",
+      frames: order.length,
+      name: `${subjectName(request.text)} (${order.length} directions)`,
+    });
     const ref = { sprite: created.id };
     for (const [i, direction] of order.entries()) {
       await this.deps.gateway.tagOp({ op: "add", name: direction, from: i + 1, to: i + 1 }, ref);
@@ -146,14 +171,14 @@ export class GenerationService implements IChatRequestHandler {
 
   /** Sequential on purpose: each create switches Aseprite's active tab. Undefined = cancelled. */
   private async createSprites(
-    count: number,
+    names: string[],
     size: { width: number; height: number },
     signal: AbortSignal,
   ): Promise<SpriteInfo[] | undefined> {
     const sprites: SpriteInfo[] = [];
-    for (let i = 0; i < count; i++) {
+    for (const name of names) {
       if (signal.aborted) return undefined;
-      sprites.push(await this.deps.gateway.createSprite({ width: size.width, height: size.height, colorMode: "rgb" }));
+      sprites.push(await this.deps.gateway.createSprite({ width: size.width, height: size.height, colorMode: "rgb", name }));
     }
     return sprites;
   }

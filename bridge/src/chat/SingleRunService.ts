@@ -12,6 +12,7 @@ import {
   type AnimationPlan,
   type PromptContext,
 } from "./promptBuilder.js";
+import { subjectName } from "./GenerationService.js";
 import { executeRun } from "./RunExecutor.js";
 import type { SessionStore } from "./SessionStore.js";
 
@@ -98,7 +99,12 @@ export class SingleRunService implements IChatRequestHandler {
 
   private createSprite(request: ChatSendRequest): Promise<SpriteInfo> {
     const size = request.options.size ?? DEFAULT_SPRITE_SIZE;
-    return this.deps.gateway.createSprite({ width: size.width, height: size.height, colorMode: "rgb" });
+    return this.deps.gateway.createSprite({
+      width: size.width,
+      height: size.height,
+      colorMode: "rgb",
+      name: subjectName(request.text),
+    });
   }
 
   /**

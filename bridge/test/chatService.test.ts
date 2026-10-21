@@ -216,7 +216,7 @@ describe("ChatService: actions", () => {
     await send({ action: "generate", text: "a red potion", sprite: 1, options: { size: { width: 24, height: 16 }, style: "pico8" } });
     expect(existedAtStart).toBe(true);
 
-    expect(gateway.callsOf("createSprite")[0].args[0]).toEqual({ width: 24, height: 16, colorMode: "rgb" });
+    expect(gateway.callsOf("createSprite")[0].args[0]).toEqual({ width: 24, height: 16, colorMode: "rgb", name: "red potion" });
     const request = runner.requests[0];
     expect(request.mcpUrl).toBe(URLS.forSprite(2));
     expect(request.prompt).toMatch(/^Create pixel art: a red potion/);

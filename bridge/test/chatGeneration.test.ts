@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ChatSendRequest } from "../src/chat/chatSchema.js";
 import type { ChatUpdate, RequestRun } from "../src/chat/chatUpdates.js";
-import { GenerationService } from "../src/chat/GenerationService.js";
+import { GenerationService, subjectName } from "../src/chat/GenerationService.js";
 import { SessionStore } from "../src/chat/SessionStore.js";
 import type { LlmEvent, LlmRunRequest } from "../src/llm/LlmRunner.js";
 import { mcpUrls } from "../src/mcp/httpServer.js";
@@ -48,7 +48,7 @@ describe("GenerationService: variations", () => {
     const outcome = await service.execute(request({ text: "a slime", options: { count: 4, size: { width: 16, height: 16 } } }), run());
 
     expect(gateway.callsOf("createSprite").map((c) => c.args[0])).toEqual(
-      Array(4).fill({ width: 16, height: 16, colorMode: "rgb" }),
+      [1, 2, 3, 4].map((k) => ({ width: 16, height: 16, colorMode: "rgb", name: `slime (variation ${k})` })),
     );
     expect(runner.requests.map((r) => r.mcpUrl)).toEqual([1, 2, 3, 4].map(URLS.forSprite));
     expect(runner.requests.map((r) => r.prompt.match(/variation (\d) of 4/)?.[1])).toEqual(["1", "2", "3", "4"]);
@@ -70,14 +70,18 @@ describe("GenerationService: variations", () => {
   it("defaults to 3 variations of 32x32", async () => {
     const { gateway, service, run, request } = setup();
     await service.execute(request({ text: "a tree" }), run());
-    expect(gateway.callsOf("createSprite").map((c) => c.args[0])).toEqual(Array(3).fill({ width: 32, height: 32, colorMode: "rgb" }));
+    expect(gateway.callsOf("createSprite").map((c) => c.args[0])).toEqual(
+      [1, 2, 3].map((k) => ({ width: 32, height: 32, colorMode: "rgb", name: `tree (variation ${k})` })),
+    );
   });
 
   it("varies the open sprite, shown as an image, when there is no description", async () => {
     const { gateway, service, runner, run, request } = setup();
     gateway.addSprite({ id: 9, width: 24, height: 20 }, true);
     await service.execute(request({ sprite: 9, options: { count: 2 } }), run());
-    expect(gateway.callsOf("createSprite").map((c) => c.args[0])).toEqual(Array(2).fill({ width: 24, height: 20, colorMode: "rgb" }));
+    expect(gateway.callsOf("createSprite").map((c) => c.args[0])).toEqual(
+      [1, 2].map((k) => ({ width: 24, height: 20, colorMode: "rgb", name: `Sprite (variation ${k})` })),
+    );
     expect(runner.requests.every((r) => r.images?.length === 1)).toBe(true);
     expect(runner.requests[0].prompt).toMatch(/^Draw variation 1 of 2 of the sprite in the attached image/);
   });
@@ -176,7 +180,13 @@ describe("GenerationService: directions", () => {
     const { gateway, sessions, service, runner, updates, run, request } = setup();
     await service.execute(request({ action: "directions", text: "a knight", options: { directions: 8, size: { width: 24, height: 32 } } }), run());
 
-    expect(gateway.callsOf("createSprite")[0].args[0]).toEqual({ width: 24, height: 32, colorMode: "rgb", frames: 8 });
+    expect(gateway.callsOf("createSprite")[0].args[0]).toEqual({
+      width: 24,
+      height: 32,
+      colorMode: "rgb",
+      frames: 8,
+      name: "knight (8 directions)",
+    });
     expect(gateway.callsOf("tagOp").map((c) => c.args[0])).toEqual(
       ["down", "down-right", "right", "up-right", "up", "up-left", "left", "down-left"].map((name, i) => ({
         op: "add",
@@ -197,5 +207,14 @@ describe("GenerationService: directions", () => {
     const { gateway, service, run, request } = setup();
     await service.execute(request({ action: "directions", text: "a cat" }), run());
     expect(gateway.callsOf("tagOp").map((c) => (c.args[0] as { name: string }).name)).toEqual(["down", "right", "up", "left"]);
+  });
+});
+
+describe("subjectName", () => {
+  it("drops articles and punctuation and stays short", () => {
+    expect(subjectName("A cute, green slime monster!")).toBe("cute green slime monster");
+    expect(subjectName("an extremely detailed medieval castle on a hill")).toBe("extremely detailed");
+    expect(subjectName("bir kırmızı iksir")).toBe("kırmızı iksir");
+    expect(subjectName("!!!")).toBe("AI sprite");
   });
 });

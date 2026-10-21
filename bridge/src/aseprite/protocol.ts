@@ -79,6 +79,8 @@ export interface CreateSpriteOptions {
   frames?: number;
   /** rrggbb(aa); fills the first layer of every frame. */
   background?: string;
+  /** Tab title of the new, unsaved sprite (e.g. "Slime (variation 2)"). */
+  name?: string;
 }
 
 export type SpriteOp =

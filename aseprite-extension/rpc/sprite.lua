@@ -95,6 +95,8 @@ return function(U)
     local mode = U.COLOR_MODES[p.colorMode or "rgb"]
     if not mode then error("Unknown color mode: " .. tostring(p.colorMode)) end
     local sprite = Sprite(math.floor(p.width), math.floor(p.height), mode)
+    -- Unsaved sprites all show "Sprite" as tab title; a name tells parallel results apart.
+    if p.name and p.name ~= "" then sprite.filename = p.name end
     app.transaction("AI: new sprite", function()
       local frames = math.floor(p.frames or 1)
       for i = 2, frames do sprite:newEmptyFrame(i) end

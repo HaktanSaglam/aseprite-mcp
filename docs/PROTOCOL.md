@@ -36,7 +36,7 @@ the bridge, where it is fast, typed and unit-tested.
 | `list_sprites` | – | `{sprites: SpriteSummary[]}` |
 | `activate_sprite` | `sprite` | `{ok}` |
 | `get_sprite_info` | – | `SpriteInfo` |
-| `create_sprite` | `width, height, colorMode?("rgb"\|"grayscale"\|"indexed"), frames?, background?` | `SpriteInfo` (new sprite becomes active) |
+| `create_sprite` | `width, height, colorMode?("rgb"\|"grayscale"\|"indexed"), frames?, background?, name?` (tab title) | `SpriteInfo` (new sprite becomes active) |
 | `sprite_op` | `op` + op params (below) | `SpriteInfo` |
 | `undo` / `redo` | `steps?` (default 1) | `{ok}` |
 | `save_sprite` | `path?` (omitted → current filename), `copy?` | `{ok, path}` |
