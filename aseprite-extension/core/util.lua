@@ -140,16 +140,25 @@ function U.eachLayer(layers, fn, prefix)
   end
 end
 
+-- Lookup order: the full path ("Hero/Body/Outline"), then a path suffix ("Body/Outline"),
+-- then the bare name ("Outline"). Creating a layer resolves its group with the same rule,
+-- so a name that was created once is found again instead of being created twice.
 function U.findLayer(sprite, name)
-  local found
+  name = tostring(name)
+  local exact, suffix, bare
   U.eachLayer(sprite.layers, function(layer, path)
-    if not found and (path == name) then found = layer end
+    if not exact and path == name then exact = layer end
+    if not suffix and name:find("/", 1, true) and path:sub(-(#name + 1)) == "/" .. name then suffix = layer end
+    if not bare and layer.name == name then bare = layer end
   end)
-  if found then return found end
-  U.eachLayer(sprite.layers, function(layer)
-    if not found and layer.name == name then found = layer end
-  end)
-  return found
+  return exact or suffix or bare
+end
+
+-- "/" separates groups in layer paths, so a name containing it would be ambiguous.
+function U.plainName(name)
+  name = tostring(name)
+  if name:find("/", 1, true) then error('Layer names can\'t contain "/" (it separates groups): ' .. name) end
+  return name
 end
 
 function U.requireLayer(sprite, name)

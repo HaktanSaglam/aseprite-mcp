@@ -74,7 +74,7 @@ return function(U)
 
     update = function(sprite, p)
       local layer = U.requireLayer(sprite, p.name)
-      if p.newName then layer.name = p.newName end
+      if p.newName then layer.name = U.plainName(p.newName) end
       if p.visible ~= nil then layer.isVisible = p.visible end
       if p.editable ~= nil then layer.isEditable = p.editable end
       if p.opacity ~= nil then layer.opacity = math.max(0, math.min(255, math.floor(p.opacity))) end
@@ -100,7 +100,7 @@ return function(U)
       app.layer = U.requireLayer(sprite, p.name)
       app.command.DuplicateLayer()
       local copy = app.layer
-      if p.newName then copy.name = p.newName end
+      if p.newName then copy.name = U.plainName(p.newName) end
       return copy
     end,
 

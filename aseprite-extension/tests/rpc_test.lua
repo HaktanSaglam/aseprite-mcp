@@ -439,6 +439,21 @@ test("Group/Layer paths create the layer inside the existing group", function()
   eq(layerPaths(call("get_sprite_info", {})), "Layer 1,Body,Body/Outline,Body/Shading", "no stray layers")
 end)
 
+test("partial group paths find the nested layer instead of creating it again", function()
+  call("create_sprite", { width = 2, height = 2 })
+  call("layer_op", { op = "add", name = "Hero", isGroup = true })
+  call("layer_op", { op = "add", name = "Body", isGroup = true, group = "Hero" })
+  call("write_image", { x = 0, y = 0, width = 1, height = 1, layer = "Body/Outline", format = "rgba", data = "ff0000ff" })
+  call("write_image", { x = 1, y = 0, width = 1, height = 1, layer = "Body/Outline", format = "rgba", data = "00ff00ff" })
+  local count = 0
+  for _, l in ipairs(call("get_sprite_info", {}).layers) do
+    if l.name == "Outline" then count = count + 1; eq(l.path, "Hero/Body/Outline", "nested path") end
+  end
+  eq(count, 1, "one Outline layer")
+  eq(call("read_image", { layer = "Body/Outline", width = 2, height = 1 }).data, "ff0000ff00ff00ff", "both writes landed")
+  expectError(function() call("layer_op", { op = "update", name = "Hero/Body/Outline", newName = "A/B" }) end, "can't contain")
+end)
+
 print(string.format("%d passed, %d failed", passed, failed))
 -- os.exit is disabled in Aseprite's Lua; a raised error makes the run fail instead.
 if failed > 0 then error(failed .. " test(s) failed") end
