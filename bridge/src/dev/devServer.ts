@@ -60,6 +60,7 @@ function runChat(events: TappedEvents, payload: AsepriteEvent): Promise<Aseprite
  *   POST /chat   chat_send payload → all chat updates until the request finishes
  *   POST /event  inject any Aseprite → bridge event (tool_run, chat_cancel, ...)
  *   POST /ui     forward {action, ...} to the window as a ui_debug event (needs devMode in the extension)
+ *   POST /recent bridge → window events since the last call (e.g. tool_result after a click)
  * Synthetic mouse/keyboard input can't drive Aseprite's UI, so this is how the chat
  * flow and the window are exercised end to end.
  */
@@ -81,8 +82,17 @@ function runUiDebug(events: TappedEvents, body: AsepriteEvent): Promise<Aseprite
   });
 }
 
+const RECENT_LIMIT = 50;
+
 export function startDevServer(options: Options, events: TappedEvents): Promise<Server> {
   const allowedHosts = new Set([`127.0.0.1:${options.port}`, `localhost:${options.port}`]);
+  // What the bridge recently told the window (tool_result, chat, ...), for test scripts
+  // that drive the UI and need to read the outcome.
+  const recent: AsepriteEvent[] = [];
+  events.watch((event) => {
+    recent.push(event);
+    if (recent.length > RECENT_LIMIT) recent.shift();
+  });
   const http = createServer(async (req, res) => {
     if (!allowedHosts.has(req.headers.host ?? "")) return send(res, 403, { error: "Host not allowed" });
     if (req.method !== "POST") return send(res, 405, { error: "POST only" });
@@ -96,6 +106,8 @@ export function startDevServer(options: Options, events: TappedEvents): Promise<
           return send(res, 200, { ok: true });
         case "/ui":
           return send(res, 200, await runUiDebug(events, body));
+        case "/recent":
+          return send(res, 200, { events: recent.splice(0) });
         default:
           return send(res, 404, { error: "Not found" });
       }
