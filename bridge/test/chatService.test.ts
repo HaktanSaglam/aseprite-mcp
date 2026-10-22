@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { ChatService } from "../src/chat/ChatService.js";
 import { GenerationService } from "../src/chat/GenerationService.js";
 import type { InstantToolRequest } from "../src/chat/InstantToolService.js";
@@ -19,7 +19,7 @@ import {
 
 const URLS = mcpUrls("127.0.0.1", 7800);
 
-function harness(providers: ProviderInfo[] = [CLAUDE_INFO]) {
+function harness(providers: ProviderInfo[] = [CLAUDE_INFO], providerPollMs?: number) {
   const gateway = new FakeGateway();
   const events = new FakeEvents();
   const runner = new FakeRunner();
@@ -35,8 +35,10 @@ function harness(providers: ProviderInfo[] = [CLAUDE_INFO]) {
     instantTools,
     sessions,
     version: "9.9.9",
+    providerPollMs,
   });
   service.attach();
+  onTestFinished(() => service.detach());
 
   let finishedRuns = 0;
   /** Sends a request and waits for its busy:false. */
@@ -376,16 +378,157 @@ describe("ChatService: tool_run", () => {
     expect(instantTools.run).not.toHaveBeenCalled();
   });
 
-  it("runs instant tools even while a chat request is busy", async () => {
-    const { gateway, events, runner } = harness();
-    gateway.addSprite();
+  it("refuses instant tools on the sprite the AI is drawing into, and runs them on other sprites", async () => {
+    const { gateway, events, runner, instantTools } = harness();
+    gateway.addSprite({ id: 1 });
+    gateway.addSprite({ id: 2 });
     let started = false;
     runner.script = hangingScript(() => (started = true));
-    events.emit({ event: "chat_send", text: "x" });
+    events.emit({ event: "chat_send", text: "x", sprite: 1 });
     await until(() => started);
-    events.emit({ event: "tool_run", requestId: 1, tool: "undo", params: {} });
-    await until(() => events.sent.some((e) => e.event === "tool_result"));
+
+    events.emit({ event: "tool_run", requestId: 1, tool: "undo", params: {}, sprite: 1 });
+    events.emit({ event: "tool_run", requestId: 2, tool: "add_outline", params: {}, sprite: 2 });
+    await until(() => events.sent.filter((e) => e.event === "tool_result").length === 2);
+    const results = events.sent.filter((e) => e.event === "tool_result");
+    expect(results.find((e) => e.requestId === 1)).toEqual({
+      event: "tool_result",
+      requestId: 1,
+      ok: false,
+      text: "The AI is drawing on this sprite. Wait for the AI to finish or press Stop.",
+    });
+    expect(results.find((e) => e.requestId === 2)).toMatchObject({ ok: true });
+    expect(instantTools.run).toHaveBeenCalledTimes(1);
+
     events.emit({ event: "chat_cancel" });
     await until(() => events.chat("busy").length === 2);
+    events.emit({ event: "tool_run", requestId: 3, tool: "undo", params: {}, sprite: 1 });
+    await until(() => events.sent.some((e) => e.event === "tool_result" && e.requestId === 3));
+    expect(events.sent.find((e) => e.requestId === 3)).toMatchObject({ ok: true });
+  });
+
+  it("refuses instant tools everywhere while a run may draw into whichever tab is active", async () => {
+    const { gateway, events, runner } = harness();
+    let started = false;
+    runner.script = hangingScript(() => (started = true));
+    events.emit({ event: "chat_send", text: "draw a tree" }); // nothing open: unscoped run
+    await until(() => started);
+    gateway.addSprite({ id: 5 });
+    events.emit({ event: "tool_run", requestId: 1, tool: "undo", params: {}, sprite: 5 });
+    await until(() => events.sent.some((e) => e.event === "tool_result"));
+    expect(events.sent.find((e) => e.event === "tool_result")).toMatchObject({ ok: false, text: expect.stringMatching(/press Stop/) });
+    events.emit({ event: "chat_cancel" });
+    await until(() => events.chat("busy").length === 2);
+  });
+
+  it("runs instant tools one at a time, in the order they were clicked", async () => {
+    const { events, instantTools } = harness();
+    let running = 0;
+    let peak = 0;
+    const order: unknown[] = [];
+    instantTools.run.mockImplementation(async (request) => {
+      running++;
+      peak = Math.max(peak, running);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      order.push(request.params.op);
+      running--;
+      return { ok: true, text: "ok" };
+    });
+    for (const [i, op] of ["flip_h", "rotate_90", "flip_v"].entries()) {
+      events.emit({ event: "tool_run", requestId: i, tool: "transform_layer", params: { op }, sprite: 3 });
+    }
+    await until(() => events.sent.filter((e) => e.event === "tool_result").length === 3);
+    expect(peak).toBe(1);
+    expect(order).toEqual(["flip_h", "rotate_90", "flip_v"]);
+  });
+
+  it("lets instant tools clicked before an AI request finish before the AI starts", async () => {
+    const { gateway, events, runner, instantTools } = harness();
+    gateway.addSprite({ id: 1 });
+    let finishTool!: () => void;
+    instantTools.run.mockImplementation(
+      () => new Promise((resolve) => (finishTool = () => resolve({ ok: true, text: "Outlined." }))),
+    );
+    events.emit({ event: "tool_run", requestId: 1, tool: "add_outline", params: {}, sprite: 1 });
+    await until(() => finishTool !== undefined);
+    events.emit({ event: "chat_send", text: "x", sprite: 1 });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(runner.requests).toHaveLength(0);
+
+    finishTool();
+    await until(() => events.chat("busy").filter((e) => e.busy === false).length === 1);
+    expect(events.sent.find((e) => e.event === "tool_result")).toMatchObject({ ok: true });
+    expect(runner.requests).toHaveLength(1);
+  });
+});
+
+describe("ChatService: provider changes", () => {
+  it("re-sends bridge_info when provider availability changes, and only then", async () => {
+    const { events, registry } = harness([{ ...CLAUDE_INFO, available: false, note: "Claude Code CLI not found" }], 5);
+    const infos = () => events.sent.filter((e) => e.event === "bridge_info");
+    events.emit({ event: "hello", instance: "a" });
+    await until(() => infos().length === 1);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(infos()).toHaveLength(1); // unchanged: no repeats
+
+    registry.providers = [CLAUDE_INFO];
+    await until(() => infos().length === 2);
+    expect(infos()[1]).toMatchObject({ providers: [{ id: "claude-code", available: true }] });
+  });
+
+  it("stops checking while Aseprite is disconnected", async () => {
+    const { events, registry } = harness([CLAUDE_INFO], 5);
+    events.emit({ event: "hello", instance: "a" });
+    await until(() => events.sent.some((e) => e.event === "bridge_info"));
+    events.setConnected(false);
+    const list = vi.spyOn(registry, "list");
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(list).not.toHaveBeenCalled();
+  });
+});
+
+describe("ChatService: Aseprite not answering", () => {
+  it("reports the failure instead of chatting as if no sprite were open", async () => {
+    const { gateway, events, runner, send } = harness();
+    gateway.addSprite({ id: 1 }, true);
+    vi.spyOn(gateway, "getSpriteInfo").mockRejectedValue(new Error('Aseprite did not answer "get_sprite_info" within 30000 ms'));
+    await send({ text: "make it darker" });
+    expect(events.chat("error").map((e) => e.text)).toEqual(['Aseprite did not answer "get_sprite_info" within 30000 ms']);
+    expect(runner.requests).toHaveLength(0);
+  });
+});
+
+describe("SingleRunService: Stop before the run", () => {
+  it("opens no new sprite once Stop was pressed", async () => {
+    const gateway = new FakeGateway();
+    const service = new SingleRunService({ gateway, mcpUrls: URLS, sessions: new SessionStore() });
+    const stop = new AbortController();
+    stop.abort();
+    const run = {
+      provider: { info: CLAUDE_INFO, runner: new FakeRunner(), model: "opus", effort: "medium" as const },
+      sink: () => {},
+      signal: stop.signal,
+    };
+    await expect(service.execute({ action: "generate", text: "a potion", options: {} }, run)).rejects.toThrow();
+    expect(gateway.callsOf("createSprite")).toHaveLength(0);
+  });
+});
+
+describe("ChatService: retrying animate", () => {
+  it("does not add the frames again after a failed attempt", async () => {
+    const { gateway, runner, send } = harness();
+    gateway.addSprite({ id: 1 }, true);
+    runner.script = async function* () {
+      yield { type: "done", ok: false, error: "Rate limited." } satisfies LlmEvent;
+    };
+    const animate = { action: "animate", sprite: 1, options: { animation: { preset: "walk" } } };
+    await send(animate);
+    runner.script = defaultScript();
+    await send(animate);
+
+    expect(gateway.callsOf("frameOp").filter((c) => (c.args[0] as { op: string }).op === "add")).toHaveLength(1);
+    expect(gateway.callsOf("tagOp")).toHaveLength(1);
+    expect((await gateway.getSpriteInfo({ sprite: 1 })).frames).toHaveLength(8);
+    expect(runner.requests[1].prompt).toMatch(/Frames 1-8 already exist .* left from an earlier attempt/);
   });
 });

@@ -263,3 +263,77 @@ describe("replyLanguage", () => {
     expect(detectLanguage("剣を持った騎士")).toBe("Japanese");
   });
 });
+
+describe("outline: false (the unticked '1px outline' box)", () => {
+  // The bridge's own wording that used to contradict "Outline: none".
+  const OUTLINE_ASKS = [/Black or near-black outline/, /1px outlines/, /broken outlines?/, /same palette, outline/, /palette, outline and details/];
+
+  it("never asks for an outline anywhere in a generation prompt, and says it overrides the rest", () => {
+    for (const style of Object.keys(STYLE_SPECS) as (keyof typeof STYLE_SPECS)[]) {
+      for (const autoReview of [true, false]) {
+        const prompts = [
+          generatePrompt(fresh({ style, outline: false, autoReview })),
+          batchItemPrompt(fresh({ style, outline: false, autoReview }), "potion", 1, 3),
+          directionsPrompt(fresh({ style, outline: false, autoReview }), DIRECTION_ORDER[4]),
+        ];
+        for (const prompt of prompts) {
+          expect(prompt).toMatch(/Outline: none\..*overrides every outline rule or step in the style, the guide/);
+          for (const ask of OUTLINE_ASKS) expect({ style, ask: ask.source, found: ask.test(prompt) }).toMatchObject({ found: false });
+        }
+      }
+    }
+  });
+
+  it("keeps the style's outline when the box is ticked or not sent", () => {
+    for (const outline of [true, undefined]) {
+      const prompt = generatePrompt(fresh({ style: "8bit", outline }));
+      expect(prompt).toMatch(/Outline: solid 1px black \(#000000\) or near-black outline around everything\./);
+      expect(prompt).toMatch(/1px outlines without jaggies/);
+      expect(prompt).not.toMatch(/Outline: none/);
+    }
+  });
+
+  it("keeps outline rules out of the style rules, so 'none' can switch them all off", () => {
+    for (const [id, spec] of Object.entries(STYLE_SPECS)) {
+      expect({ id, rules: spec.rules.filter((rule) => /outline/i.test(rule)) }).toEqual({ id, rules: [] });
+    }
+  });
+});
+
+describe("autoReview for chat, edit_selection and review", () => {
+  const existing: PromptContext = { ...fresh({}, "make it darker"), freshSprite: false, hasContent: true };
+  const selection = { x: 1, y: 1, width: 4, height: 4 };
+
+  it("adds the one review pass when Auto-review is on", () => {
+    const on = { autoReview: true };
+    expect(chatPrompt({ ...existing, options: on })).toMatch(/If you changed the art: when you are done, do exactly one review pass/);
+    expect(editSelectionPrompt({ ...existing, options: on, selection })).toMatch(
+      /do exactly one review pass.*Keep selectionOnly: true for the fixes\./,
+    );
+    expect(reviewPrompt({ ...existing, options: on })).toMatch(/do exactly one review pass/);
+  });
+
+  it("leaves those prompts unchanged when Auto-review is off", () => {
+    for (const options of [{ autoReview: false }, {}]) {
+      expect(chatPrompt({ ...existing, options })).not.toMatch(/review pass/);
+      expect(editSelectionPrompt({ ...existing, options, selection })).not.toMatch(/review pass/);
+      expect(reviewPrompt({ ...existing, options })).not.toMatch(/review pass/);
+    }
+  });
+});
+
+describe("animatePrompt after an earlier attempt", () => {
+  const animation = { preset: "walk" as const, frames: 8, frameMs: 100, loop: true };
+  const ctx = { ...fresh({}, ""), freshSprite: false };
+
+  it("says the frames already exist and may hold part of the motion", () => {
+    const prompt = animatePrompt(ctx, { animation, tag: "walk", prepared: true, resumed: true });
+    expect(prompt).toMatch(/Frames 1-8 already exist with their durations and the tag "walk", left from an earlier attempt/);
+    expect(prompt).toMatch(/don't add or remove frames/);
+  });
+
+  it("asks to update an existing tag instead of adding a second one", () => {
+    const prompt = animatePrompt(ctx, { animation, tag: "walk", prepared: false, existingTag: { from: 1, to: 3 } });
+    expect(prompt).toMatch(/update the existing tag "walk" \(now frames 1-3\).*never add a second "walk" tag/);
+  });
+});

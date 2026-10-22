@@ -2,9 +2,12 @@ import type { PresetPaletteId, StyleId } from "./chatSchema.js";
 
 export interface StyleSpec {
   label: string;
-  /** Concrete, checkable constraints: a model follows numbers far better than adjectives. */
+  /**
+   * Concrete, checkable constraints: a model follows numbers far better than adjectives.
+   * Never about outlines: those live in `outline` alone, so "no outline" can switch them off.
+   */
   rules: string[];
-  /** Outline rule when the user didn't choose one. */
+  /** The style's outline, used unless the user unticked "1px outline". */
   outline: string;
   /** How many colors to pick when the palette is "auto". */
   autoColors: string;
@@ -35,9 +38,8 @@ export const STYLE_SPECS: Record<StyleId, StyleSpec> = {
     rules: [
       "At most 3 visible colors per sprite part plus transparency (4 including transparent), like NES sprite palettes; a large subject may combine 2-3 such parts.",
       "Chunky, readable shapes; no anti-aliasing, no gradients; at most one shade step per color; dithering only as simple checker patterns.",
-      "Black or near-black outline around everything.",
     ],
-    outline: "solid 1px black (#000000) or near-black outline",
+    outline: "solid 1px black (#000000) or near-black outline around everything",
     autoColors: "8-12 NES-like",
     setPalette: "nes",
   },
@@ -57,7 +59,7 @@ export const STYLE_SPECS: Record<StyleId, StyleSpec> = {
     label: "original Game Boy (DMG)",
     rules: [
       "Exactly 4 colors, all greens: #0f380f (darkest), #306230, #8bac0f, #9bbc0f (lightest); transparency allowed. No other color anywhere.",
-      "High contrast: darkest for outlines and deep shadows, lightest for highlights; dithering patterns for in-between tones.",
+      "High contrast: darkest for lines and deep shadows, lightest for highlights; dithering patterns for in-between tones.",
       "No anti-aliasing.",
     ],
     outline: "1px outline in #0f380f",

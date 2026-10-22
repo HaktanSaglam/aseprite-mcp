@@ -93,11 +93,15 @@ export class ScopedAsepriteGateway implements IAsepriteGateway {
   }
 
   async layerOp(op: LayerOp, ref?: SpriteRef): Promise<{ layer?: string }> {
-    return this.inner.layerOp(op, this.scope(ref));
+    const scope = this.scope(ref);
+    if (op.op === "activate") await this.requireShownToUser(`activate layer "${op.name}"`);
+    return this.inner.layerOp(op, scope);
   }
 
   async frameOp(op: FrameOp, ref?: SpriteRef): Promise<{ frames: number }> {
-    return this.inner.frameOp(op, this.scope(ref));
+    const scope = this.scope(ref);
+    if (op.op === "activate") await this.requireShownToUser(`activate frame ${op.frame}`);
+    return this.inner.frameOp(op, scope);
   }
 
   async tagOp(op: TagOp, ref?: SpriteRef): Promise<void> {
@@ -117,6 +121,21 @@ export class ScopedAsepriteGateway implements IAsepriteGateway {
       throw this.refusal(`edit sprite #${ref.sprite}`);
     }
     return { sprite: this.spriteId };
+  }
+
+  /**
+   * Activating a frame or layer makes Aseprite show this sprite, so on a background tab
+   * it would pull the user away from the tab they are working in. On the tab they are
+   * looking at it only changes what they see there, which is what the model asked for.
+   */
+  private async requireShownToUser(what: string): Promise<void> {
+    const sprites = await this.inner.listSprites();
+    if (sprites.some((s) => s.id === this.spriteId && s.isActive)) return;
+    throw new Error(
+      `This job draws into sprite #${this.spriteId}, which is not the tab the user is looking at, so it ` +
+        `cannot ${what}: that would switch the user's tab. Activating is not needed: drawing, effect and ` +
+        "view tools take frame and layer arguments, so keep working with those.",
+    );
   }
 
   // The message is read by the model, so it says what to do instead.

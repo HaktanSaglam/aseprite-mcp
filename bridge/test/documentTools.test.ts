@@ -43,6 +43,25 @@ describe("list_sprites / select_sprite", () => {
   });
 });
 
+describe("create_sprite", () => {
+  it("checks the background color before Aseprite opens a tab, so a bad color leaves none behind", async () => {
+    for (const background of ["white", "zz00zz", "#12345"]) {
+      expect(await h.error("create_sprite", { width: 8, height: 8, background })).toMatch(/Use "#rrggbb"/);
+    }
+    expect(gw.calls.filter((c) => c.method === "createSprite")).toHaveLength(0);
+  });
+
+  it("normalizes the colors it accepts to what Aseprite expects", async () => {
+    await h.json("create_sprite", { width: 2, height: 2, background: "#F80" });
+    await h.json("create_sprite", { width: 2, height: 2, background: "11223380" });
+    await h.json("create_sprite", { width: 2, height: 2, background: "transparent" });
+    await h.json("create_sprite", { width: 2, height: 2 });
+    const backgrounds = gw.calls.filter((c) => c.method === "createSprite").map((c) => (c.args[0] as { background?: string }).background);
+    expect(backgrounds).toEqual(["#ff8800", "#11223380", undefined, undefined]);
+    expect(gw.pixel("Layer 1", 0, 0, 1, 1)).toEqual([255, 136, 0, 255]);
+  });
+});
+
 describe("edit_sprite", () => {
   beforeEach(() => {
     gw.addSprite({ width: 16, height: 8 });

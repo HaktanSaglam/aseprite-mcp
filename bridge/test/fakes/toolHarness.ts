@@ -1,8 +1,8 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { PNG } from "pngjs";
 import { CanvasService } from "../../src/canvas/CanvasService.js";
+import { StrictMcpServer } from "../../src/mcp/StrictMcpServer.js";
 import type { ToolRegistrar } from "../../src/mcp/ToolContext.js";
 import type { IScriptRunner } from "../../src/script/ScriptRunner.js";
 import { FakeGateway } from "./FakeGateway.js";
@@ -40,11 +40,12 @@ const noScripts: IScriptRunner = {
 };
 
 /**
- * Registers tools on a real McpServer and talks to it through an in-memory client,
- * so tests cover zod validation, defaults and error wrapping exactly as a model sees them.
+ * Registers tools on the same strict server class the bridge uses and talks to it through
+ * an in-memory client, so tests cover zod validation, defaults and error wrapping exactly as
+ * a model sees them.
  */
 export async function toolHarness(registrars: ToolRegistrar[], gateway = new FakeGateway()): Promise<ToolHarness> {
-  const server = new McpServer({ name: "test", version: "0.0.0" });
+  const server = new StrictMcpServer({ name: "test", version: "0.0.0" });
   const ctx = { gateway, canvas: new CanvasService(gateway), scripts: noScripts };
   for (const register of registrars) register(server, ctx);
 

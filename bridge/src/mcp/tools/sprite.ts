@@ -1,11 +1,20 @@
 import { basename } from "node:path";
 import { z } from "zod";
 import type { SpriteSummary } from "../../aseprite/protocol.js";
+import { formatHex, parseHex } from "../../pixel/color.js";
 import type { ToolRegistrar } from "../ToolContext.js";
 import { jsonResult } from "../toolResult.js";
+import { colorArg } from "./effects.js";
 
 function describeSprite(s: SpriteSummary): string {
   return `${s.id} (${basename(s.filename) || "untitled"}, ${s.width}x${s.height})`;
+}
+
+/** create_sprite's fill as the rrggbb(aa) Aseprite expects; undefined = transparent canvas. */
+function fillColor(background: string | undefined): string | undefined {
+  if (background === undefined) return undefined;
+  const [r, g, b, a] = parseHex(background);
+  return a === 0 ? undefined : formatHex(r, g, b, a);
 }
 
 export const registerSpriteTools: ToolRegistrar = (server, { gateway }) => {
@@ -31,10 +40,12 @@ export const registerSpriteTools: ToolRegistrar = (server, { gateway }) => {
         height: z.number().int().min(1).max(1024).describe("Canvas height in pixels."),
         colorMode: z.enum(["rgb", "grayscale", "indexed"]).default("rgb").describe("rgb unless asked otherwise."),
         frames: z.number().int().min(1).max(256).default(1).describe("Number of animation frames."),
-        background: z.string().optional().describe("Fill color (#rrggbb). Omit for transparent."),
+        background: colorArg.optional().describe('Fill color (#rrggbb). Omit (or "transparent") for a transparent canvas.'),
       },
     },
-    async (args) => jsonResult(await gateway.createSprite(args)),
+    // The color is checked by the schema before anything is created: Aseprite opens the
+    // new tab first, so a color it rejects would leave an empty tab behind on every retry.
+    async ({ background, ...args }) => jsonResult(await gateway.createSprite({ ...args, background: fillColor(background) })),
   );
 
   server.registerTool(

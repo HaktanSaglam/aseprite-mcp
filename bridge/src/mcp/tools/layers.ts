@@ -55,6 +55,57 @@ function requireFreeName(layers: LayerInfo[], name: string): void {
   if (layers.some((l) => l.name === name)) throw new Error(`A layer named "${name}" already exists; choose another name`);
 }
 
+// "/" separates group and layer in every path argument, so a name containing it could never be addressed.
+function requireNameWithoutSlash(name: string, action: string): void {
+  if (!name.includes("/")) return;
+  throw new Error(
+    `Layer names cannot contain "/" ("${name}"): it separates group and layer in paths like "Group/Layer". ` +
+      `'${action}' keeps the layer where it is; to put it into a group use action 'move' with group.`,
+  );
+}
+
+/**
+ * Where an add puts the new layer. Every tool addresses nested layers as "Group/Layer",
+ * so add accepts that form too: the last part names the new layer, the rest is an
+ * existing group.
+ */
+function newLayerPlace(args: ManageLayersArgs, layers: LayerInfo[]): { name: string; group?: string } {
+  const slash = args.name.lastIndexOf("/");
+  if (slash < 0) return { name: args.name, group: args.group ? requireGroup(layers, args.group).path : undefined };
+
+  const parent = args.name.slice(0, slash);
+  const name = args.name.slice(slash + 1);
+  if (!parent || !name) throw new Error(`"${args.name}" is not a layer path; use "Group/Layer" or a plain name`);
+  if (args.group) throw new Error(`Name the group either in name ("${args.name}") or in group ("${args.group}"), not both`);
+  if (!findLayer(layers, parent)) {
+    throw new Error(`Group "${parent}" does not exist. Create it first: action 'add', name "${parent}", isGroup: true.`);
+  }
+  return { name, group: requireGroup(layers, parent).path };
+}
+
+/** The sibling directly below, which merge_down merges into. */
+function layerBelow(layers: LayerInfo[], layer: LayerInfo): LayerInfo | undefined {
+  return layers.find((l) => l.parent === layer.parent && l.stackIndex === layer.stackIndex - 1);
+}
+
+// Aseprite's Merge Down silently does nothing for groups, so explain it before trying.
+function requireMergeable(layers: LayerInfo[], layer: LayerInfo): void {
+  if (layer.stackIndex <= 1) {
+    const where = layer.parent ? ` of group "${layer.parent}"` : "";
+    throw new Error(`"${layer.path}" is the bottom layer${where}; there is nothing below it to merge into`);
+  }
+  if (layer.isGroup) {
+    throw new Error(`"${layer.path}" is a group; merge_down only merges an image layer into the image layer below it`);
+  }
+  const below = layerBelow(layers, layer);
+  if (below?.isGroup) {
+    throw new Error(
+      `The layer below "${layer.path}" is the group "${below.path}"; merge_down only merges into an image layer. ` +
+        "Move the layer first (action 'move' with above, below or group).",
+    );
+  }
+}
+
 /**
  * Validates one manage_layers call against the current layers and builds the protocol
  * layer_op. Existing layers are passed on by full path so nested names are unambiguous.
@@ -63,10 +114,10 @@ export function toLayerOp(args: ManageLayersArgs, layers: LayerInfo[]): LayerOp 
   rejectUnusedArgs(args.action, args, LAYER_PARAMS[args.action]);
   switch (args.action) {
     case "add": {
-      requireFreeName(layers, args.name);
-      const group = args.group ? requireGroup(layers, args.group).path : undefined;
+      const { name, group } = newLayerPlace(args, layers);
+      requireFreeName(layers, name);
       const above = args.above ? requireLayer(layers, args.above).path : undefined;
-      return { op: "add", name: args.name, group, above, isGroup: args.isGroup };
+      return { op: "add", name, group, above, isGroup: args.isGroup };
     }
     case "delete": {
       const layer = requireLayer(layers, args.name);
@@ -79,7 +130,10 @@ export function toLayerOp(args: ManageLayersArgs, layers: LayerInfo[]): LayerOp 
       if ([newName, visible, opacity, blendMode, editable].every((v) => v === undefined)) {
         throw new Error("update needs at least one of newName, visible, opacity, blendMode, editable");
       }
-      if (newName !== undefined && newName !== layer.name) requireFreeName(layers, newName);
+      if (newName !== undefined && newName !== layer.name) {
+        requireNameWithoutSlash(newName, "update");
+        requireFreeName(layers, newName);
+      }
       return { op: "update", name: layer.path, newName, visible, opacity, blendMode, editable };
     }
     case "move": {
@@ -110,20 +164,34 @@ export function toLayerOp(args: ManageLayersArgs, layers: LayerInfo[]): LayerOp 
     }
     case "duplicate": {
       const layer = requireLayer(layers, args.name);
-      if (args.newName !== undefined) requireFreeName(layers, args.newName);
+      if (args.newName !== undefined) {
+        requireNameWithoutSlash(args.newName, "duplicate");
+        requireFreeName(layers, args.newName);
+      }
       return { op: "duplicate", name: layer.path, newName: args.newName };
     }
     case "merge_down": {
       const layer = requireLayer(layers, args.name);
-      if (layer.stackIndex <= 1) {
-        const where = layer.parent ? ` of group "${layer.parent}"` : "";
-        throw new Error(`"${layer.path}" is the bottom layer${where}; there is nothing below it to merge into`);
-      }
+      requireMergeable(layers, layer);
       return { op: "merge_down", name: layer.path };
     }
     case "activate":
       return { op: "activate", name: requireLayer(layers, args.name).path };
   }
+}
+
+/**
+ * Aseprite refuses some merges without an error (tilemaps, reference layers, ...). A merge
+ * that happened always removes one layer, so an unchanged count means nothing was merged.
+ */
+function checkMerged(name: string, before: SpriteInfo, after: SpriteInfo): void {
+  if (after.layers.length < before.layers.length) return;
+  const layer = requireLayer(before.layers, name);
+  const below = layerBelow(before.layers, layer)?.path ?? "the layer below";
+  throw new Error(
+    `Aseprite did not merge "${layer.path}" into "${below}"; nothing changed. It only merges a plain image ` +
+      "layer into the plain image layer directly below it (no groups, tilemaps or reference layers).",
+  );
 }
 
 /** Compact view of the layer stack so the model sees the effect of its change. */
@@ -149,14 +217,17 @@ export const registerLayerTools: ToolRegistrar = (server, { gateway }) => {
         "Keep your work on its own layer (e.g. add \"AI\" or \"Shading\") so the user's layers stay " +
         "intact; drawing tools also create a missing layer on first write. Layers are addressed by " +
         "name or \"Group/Layer\" path. Actions:\n" +
-        "- add: name, optional group (inside it), above (right above that layer), isGroup\n" +
+        "- add: name (\"Group/Name\" creates it inside that existing group), optional group, above (right above that layer), isGroup\n" +
         "- update: newName, visible, opacity (0-255), blendMode, editable (false = locked)\n" +
         "- move: above or below another layer, or group (\"\" = top level)\n" +
         "- duplicate: optional newName; merge_down: into the layer below; delete; activate\n" +
         "Returns the resulting layer stack, bottom to top.",
       inputSchema: {
         action: z.enum(LAYER_ACTIONS).describe("What to do; each action uses only the arguments listed above."),
-        name: z.string().min(1).describe("The layer to act on (add: the new layer's name)."),
+        name: z
+          .string()
+          .min(1)
+          .describe('The layer to act on (add: the new layer\'s name, or "Group/Name" inside an existing group).'),
         newName: z.string().min(1).optional().describe("update: rename to this; duplicate: name of the copy."),
         group: z.string().optional().describe('add/move: put the layer inside this group; move with "" = top level.'),
         above: z.string().optional().describe("add/move: place directly above this layer."),
@@ -173,6 +244,7 @@ export const registerLayerTools: ToolRegistrar = (server, { gateway }) => {
       const op = toLayerOp(args, before.layers);
       const { layer } = await gateway.layerOp(op);
       const after = await gateway.getSpriteInfo();
+      if (op.op === "merge_down") checkMerged(op.name, before, after);
       return jsonResult({
         ok: true,
         action: args.action,

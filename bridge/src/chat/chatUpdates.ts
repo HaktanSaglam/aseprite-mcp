@@ -24,6 +24,12 @@ export interface RequestRun {
   provider: ResolvedProvider;
   sink: ChatSink;
   signal: AbortSignal;
+  /**
+   * Called for every sprite the request draws into, as soon as it is known. Until then
+   * (and for a run that works on whatever tab is active) any sprite may be its target,
+   * so the Tools tab's instant tools are held off everywhere.
+   */
+  claimSprite?: (sprite: number) => void;
 }
 
 export interface RequestOutcome {

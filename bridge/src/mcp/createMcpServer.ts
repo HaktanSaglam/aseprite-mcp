@@ -1,6 +1,7 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { ScopedAsepriteGateway } from "../aseprite/ScopedAsepriteGateway.js";
 import { CanvasService } from "../canvas/CanvasService.js";
+import { StrictMcpServer } from "./StrictMcpServer.js";
 import type { ToolContext, ToolRegistrar } from "./ToolContext.js";
 import { TOOL_REGISTRARS } from "./tools/index.js";
 
@@ -49,7 +50,7 @@ shows them); fix script errors from the reported line; use layers rather than re
  * sprite the tools act on. `registrars` is only overridden by tests.
  */
 export function createMcpServer(ctx: ToolContext, registrars: readonly ToolRegistrar[] = TOOL_REGISTRARS): McpServer {
-  const server = new McpServer(
+  const server = new StrictMcpServer(
     { name: "aseprite-mcp", version: "1.0.0" },
     { instructions: INSTRUCTIONS },
   );
