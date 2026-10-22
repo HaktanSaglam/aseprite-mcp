@@ -169,6 +169,12 @@ function U.checkWritable(layer)
   if layer.isGroup then error("Layer is a group: " .. layer.name) end
   if layer.isTilemap then error("Tilemap layers are not supported: " .. layer.name) end
   if not layer.isEditable then error("Layer is locked: " .. layer.name) end
+  -- Locking a group locks everything inside it in the UI, so honour it here too.
+  local parent = layer.parent
+  while parent ~= nil and parent ~= layer.sprite do
+    if not parent.isEditable then error("Layer " .. layer.name .. " is inside the locked group " .. parent.name) end
+    parent = parent.parent
+  end
   return layer
 end
 

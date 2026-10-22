@@ -35,6 +35,9 @@ return function(U)
 
     delete = function(sprite, p)
       local layer = U.requireLayer(sprite, p.name)
+      local count = 0
+      U.eachLayer(sprite.layers, function(l) if not l.isGroup then count = count + 1 end end)
+      if not layer.isGroup and count <= 1 then error("Can't delete the sprite's only layer") end
       sprite:deleteLayer(layer)
     end,
 

@@ -100,6 +100,8 @@ return function(U)
     app.transaction("AI: new sprite", function()
       local frames = math.floor(p.frames or 1)
       for i = 2, frames do sprite:newEmptyFrame(i) end
+      -- Adding frames moves the playhead to the last one; a new sprite starts at frame 1.
+      if frames > 1 and app.sprite == sprite then app.frame = sprite.frames[1] end
       if p.background then
         local color = U.hexToColor(p.background)
         local layer = sprite.layers[1]
@@ -208,6 +210,33 @@ return function(U)
     packed = SpriteSheetType.PACKED,
   }
 
+  -- Frame files of a "frames" export: hero-1.png ... hero-12.png → hero-01.png ...
+  -- (zero-padded to the frame count). The bridge predicts the same names.
+  function M.sequenceName(stem, ext, frame, frameCount)
+    local digits = #tostring(frameCount)
+    return string.format("%s-%0" .. digits .. "d%s", stem, frame, ext)
+  end
+
+  local function findTag(sprite, name)
+    for _, tag in ipairs(sprite.tags) do
+      if tag.name == name then return tag end
+    end
+    error("Tag not found: " .. tostring(name))
+  end
+
+  -- Renders one frame (visible layers) and saves it, scaled by whole pixels.
+  -- SaveFileCopyAs can't do this reliably: its frame range is 0-based with 0 meaning
+  -- "all frames", and a file name ending in a digit turns into a numbered sequence.
+  local function saveFrame(sprite, frame, scale, path)
+    local img = Image(sprite.width, sprite.height, ColorMode.RGB)
+    img:drawSprite(sprite, frame)
+    local factor = math.max(1, math.floor(scale))
+    if factor > 1 then
+      img:resize{ width = sprite.width * factor, height = sprite.height * factor, method = "nearest" }
+    end
+    img:saveAs(path)
+  end
+
   function M.export_sprite(p)
     local sprite = U.sprite(p)
     local path = p.path
@@ -229,14 +258,22 @@ return function(U)
         if p.columns then args.columns = math.floor(p.columns) end
         if p.tag then args.tag = p.tag end
         app.command.ExportSpriteSheet(args)
+      elseif p.kind == "png" then
+        saveFrame(sprite, U.frameNumber(sprite, p.frame), scale, path)
+      elseif p.kind == "frames" then
+        local first, last = 1, #sprite.frames
+        if p.tag then
+          local tag = findTag(sprite, p.tag)
+          first, last = tag.fromFrame.frameNumber, tag.toFrame.frameNumber
+        end
+        local stem, ext = path:match("^(.*)(%.[^./\\]+)$")
+        if not stem then error("path needs an extension") end
+        for frame = first, last do
+          saveFrame(sprite, frame, scale, M.sequenceName(stem, ext, frame, #sprite.frames))
+        end
       else
         local args = { ui = false, filename = path, scale = scale }
         if p.tag then args.tag = p.tag end
-        if p.kind == "png" then
-          local frame = U.frameNumber(sprite, p.frame)
-          args.fromFrame = frame
-          args.toFrame = frame
-        end
         app.command.SaveFileCopyAs(args)
       end
     end)

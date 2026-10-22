@@ -193,6 +193,13 @@ function rejectOption(present: boolean, message: string): void {
  * Checks an export request against the sprite and the file system before Aseprite
  * writes anything, so the model gets a precise error instead of a silent wrong file.
  */
+/** hero.png, frame 3 of 12 → hero-03.png; must match sequenceName in rpc/sprite.lua. */
+export function sequenceName(path: string, frame: number, frameCount: number): string {
+  const ext = extname(path);
+  const stem = join(dirname(path), basename(path, ext));
+  return `${stem}-${String(frame).padStart(String(frameCount).length, "0")}${ext}`;
+}
+
 export function planExport(args: ExportArgs, info: SpriteInfo, probe: PathProbe = nodePathProbe): ExportPlan {
   const kind = args.kind ?? inferKind(args.path);
   const extensions = kind === "gif" ? [".gif"] : [".png"];
@@ -229,14 +236,16 @@ export function planExport(args: ExportArgs, info: SpriteInfo, probe: PathProbe 
   const files: string[] = [];
   let path: string;
   if (kind === "frames") {
-    // Aseprite numbers a png sequence itself: hero.png → hero1.png, hero2.png, ...
+    // One file per frame, named like the extension writes them (rpc/sprite.lua sequenceName).
     path = resolveOutputPath(args.path, { extensions, overwrite: true, label: "path" }, probe);
-    const stem = join(dirname(path), basename(path, extname(path)));
-    const first = `${stem}1${extname(path)}`;
-    if (probe.kind(first) === "file" && !args.overwrite) {
-      throw new Error(`"${first}" already exists; pass overwrite: true to replace the sequence or choose another name`);
+    const tag = args.tag !== undefined ? info.tags.find((t) => t.name === args.tag) : undefined;
+    const from = tag?.from ?? 1;
+    const names = Array.from({ length: frameCount }, (_, i) => sequenceName(path, from + i, info.frames.length));
+    const taken = names.find((name) => probe.kind(name) !== null);
+    if (taken && !args.overwrite) {
+      throw new Error(`"${taken}" already exists; pass overwrite: true to replace the sequence or choose another name`);
     }
-    files.push(frameCount > 1 ? `${first} … ${stem}${frameCount}${extname(path)}` : first);
+    files.push(names.length > 1 ? `${names[0]} … ${names[names.length - 1]}` : names[0]);
   } else {
     path = resolveOutputPath(args.path, { extensions, overwrite: args.overwrite, label: "path" }, probe);
     files.push(path);

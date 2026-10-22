@@ -210,9 +210,9 @@ describe("export_sprite", () => {
   it("describes numbered frame files and protects an existing sequence", async () => {
     const path = join(dir, "seq.png");
     const result = await h.json("export_sprite", { path, kind: "frames" });
-    expect(result.files).toEqual([`${join(dir, "seq1.png")} … ${join(dir, "seq3.png")}`]);
-    writeFileSync(join(dir, "seq1.png"), "old");
-    expect(await h.error("export_sprite", { path, kind: "frames" })).toMatch(/seq1\.png" already exists/);
+    expect(result.files).toEqual([`${join(dir, "seq-1.png")} … ${join(dir, "seq-3.png")}`]);
+    writeFileSync(join(dir, "seq-2.png"), "old");
+    expect(await h.error("export_sprite", { path, kind: "frames" })).toMatch(/seq-2\.png" already exists/);
     await h.json("export_sprite", { path, kind: "frames", overwrite: true });
   });
 
@@ -237,5 +237,14 @@ describe("export_sprite", () => {
   it("checks frames and tags against the sprite", async () => {
     expect(await h.error("export_sprite", { path: join(dir, "f.png"), frame: 9 })).toMatch(/Frame 9 out of range \(sprite has 3 frames\)/);
     expect(await h.error("export_sprite", { path: join(dir, "t.gif"), tag: "run" })).toMatch(/Tag "run" not found\. Tags: walk/);
+  });
+});
+
+describe("sequenceName", () => {
+  it("pads frame numbers to the frame count", async () => {
+    const { sequenceName } = await import("../src/mcp/tools/document.js");
+    const { join } = await import("node:path");
+    expect(sequenceName(join("a", "hero.png"), 3, 12)).toBe(join("a", "hero-03.png"));
+    expect(sequenceName(join("a", "hero.png"), 3, 9)).toBe(join("a", "hero-3.png"));
   });
 });

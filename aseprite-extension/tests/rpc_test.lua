@@ -232,9 +232,59 @@ test("export png and gif", function()
   eq(app.fs.isFile(png), true, "png written")
   local img = Image{ fromFile = png }
   eq(img.width, 6, "scaled png")
+  -- Nearest-neighbour scaling: pixel art must stay crisp, no blended edge colors.
+  eq(app.pixelColor.rgbaA(img:getPixel(2, 0)), 255, "scaled pixel keeps its color")
+  eq(app.pixelColor.rgbaA(img:getPixel(3, 0)), 0, "next source pixel stays transparent")
   local sheet = app.fs.joinPath(tmp, "amcp_test_sheet.png")
   call("export_sprite", { path = sheet, kind = "sheet" })
   eq(Image{ fromFile = sheet }.width, 4, "sheet width")
+end)
+
+test("export png writes the requested frame (1-based)", function()
+  call("create_sprite", { width = 2, height = 1, frames = 2 })
+  call("write_image", { x = 0, y = 0, width = 1, height = 1, frame = 2, format = "rgba", data = "ff0000ff" })
+  local png = app.fs.joinPath(app.fs.tempPath, "amcp_test_frame2.png")
+  call("export_sprite", { path = png, kind = "png", frame = 2 })
+  local img = Image{ fromFile = png }
+  eq(app.pixelColor.rgbaR(img:getPixel(0, 0)), 255, "frame 2 pixel")
+  call("create_sprite", { width = 2, height = 1 })
+  call("write_image", { x = 0, y = 0, width = 1, height = 1, format = "rgba", data = "00ff00ff" })
+  local single = app.fs.joinPath(app.fs.tempPath, "amcp_test_single.png")
+  call("export_sprite", { path = single, kind = "png", frame = 1 })
+  eq(app.pixelColor.rgbaG(Image{ fromFile = single }:getPixel(0, 0)), 255, "single-frame pixel")
+end)
+
+test("background layers keep pixels under transparent writes", function()
+  local info = call("create_sprite", { width = 2, height = 1, background = "0000ffff" })
+  local sprite = U.sprite({ sprite = info.id })
+  app.transaction("bg", function() app.command.BackgroundFromLayer() end)
+  local bg = sprite.layers[1]
+  eq(bg.isBackground, true, "is background")
+  call("write_image", { x = 0, y = 0, width = 2, height = 1, layer = bg.name, format = "rgba", data = "00000000ff0000ff" })
+  eq(call("read_image", { layer = bg.name }).data, "0000ffffff0000ff", "transparent kept the blue pixel")
+end)
+
+test("refuses to delete the only layer and to write inside a locked group", function()
+  call("create_sprite", { width = 2, height = 2 })
+  expectError(function() call("layer_op", { op = "delete", name = "Layer 1" }) end, "only layer")
+  call("layer_op", { op = "add", name = "G", isGroup = true })
+  call("layer_op", { op = "add", name = "Inner", group = "G" })
+  call("layer_op", { op = "update", name = "G", editable = false })
+  expectError(function()
+    call("write_image", { x = 0, y = 0, width = 1, height = 1, layer = "Inner", format = "rgba", data = "ff0000ff" })
+  end, "locked group")
+end)
+
+test("export frames writes one padded file per frame", function()
+  call("create_sprite", { width = 2, height = 1, frames = 3 })
+  call("write_image", { x = 0, y = 0, width = 1, height = 1, frame = 3, format = "rgba", data = "ff0000ff" })
+  local base = app.fs.joinPath(app.fs.tempPath, "amcp_seq.png")
+  call("export_sprite", { path = base, kind = "frames" })
+  for f = 1, 3 do
+    eq(app.fs.isFile(app.fs.joinPath(app.fs.tempPath, "amcp_seq-" .. f .. ".png")), true, "frame file " .. f)
+  end
+  local third = Image{ fromFile = app.fs.joinPath(app.fs.tempPath, "amcp_seq-3.png") }
+  eq(app.pixelColor.rgbaR(third:getPixel(0, 0)), 255, "frame 3 content")
 end)
 
 print(string.format("%d passed, %d failed", passed, failed))

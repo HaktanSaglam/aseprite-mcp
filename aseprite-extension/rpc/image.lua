@@ -71,7 +71,16 @@ return function(U)
     local cel = layer:cel(frame)
     local opacity = cel and cel.opacity or 255
     if cel then canvas:drawImage(cel.image, cel.position, 255, BlendMode.SRC) end
-    canvas:drawImage(src, Point(math.floor(w.x), math.floor(w.y)), 255, BlendMode.SRC)
+    -- A Background layer has no transparency: Aseprite would show "erased" pixels as
+    -- black, so transparent pixels keep what is there instead of replacing it.
+    local blend = layer.isBackground and BlendMode.NORMAL or BlendMode.SRC
+    canvas:drawImage(src, Point(math.floor(w.x), math.floor(w.y)), 255, blend)
+
+    if layer.isBackground then
+      -- Background cels always cover the whole canvas.
+      sprite:newCel(layer, frame, canvas, Point(0, 0))
+      return layer.name
+    end
 
     local bounds = canvas:shrinkBounds()
     if bounds.isEmpty then
