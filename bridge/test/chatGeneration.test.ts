@@ -218,3 +218,13 @@ describe("subjectName", () => {
     expect(subjectName("!!!")).toBe("AI sprite");
   });
 });
+
+describe("GenerationService: palette current", () => {
+  it("copies the user's palette into every sprite it creates", async () => {
+    const { gateway, service, run, request } = setup();
+    gateway.addSprite({ id: 9 }, true);
+    await service.execute(request({ text: "a tree", sprite: 9, options: { count: 2, palette: "current" } }), run());
+    expect(gateway.callsOf("getPalette")[0].args[0]).toEqual({ sprite: 9 });
+    expect(gateway.callsOf("setPalette").map((c) => c.args[1])).toEqual([{ sprite: 10 }, { sprite: 11 }]);
+  });
+});

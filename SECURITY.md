@@ -46,10 +46,17 @@ to give the extension full trust.
 WebAssembly, a separate engine without access to Node.js, the file system or the network. Each
 run is limited in time (5 s), memory (64 MB) and number of drawing calls.
 
-**The in-Aseprite assistant cannot run commands.** With the default Claude Code provider the
-bridge starts `claude -p` with all built-in tools disabled (no shell, no file editing), only this
-bridge's Aseprite tools allowed, `--strict-mcp-config` and `--setting-sources ""` (your other MCP
-servers, hooks and settings are not loaded), in an empty working directory.
+**The in-Aseprite assistant cannot run commands (default and API providers).** With the default
+Claude Code provider the bridge starts `claude -p` with all built-in tools disabled (no shell, no
+file editing), only this bridge's Aseprite tools allowed, `--strict-mcp-config` and
+`--setting-sources ""` (your other MCP servers, hooks and settings are not loaded), in an empty
+working directory. The API providers (OpenAI-compatible, Anthropic, Ollama) only ever see this
+bridge's tools.
+
+**Experimental CLI providers are less contained.** Codex runs in its own read-only sandbox: it
+cannot write files, but its shell tool can read files on disk, and it also loads the MCP servers
+from your own Codex configuration. Gemini CLI runs with its file, shell and web tools excluded,
+but tool approval is set to automatic. Use them only with prompts you trust.
 
 **Files.** `save_sprite` and `export_sprite` are the only tools that write files, through
 Aseprite, to the path the MCP client asks for; see their tool descriptions for the exact rules.

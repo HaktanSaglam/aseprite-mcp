@@ -13,12 +13,13 @@ import {
   type PromptContext,
 } from "./promptBuilder.js";
 import { subjectName } from "./GenerationService.js";
+import { carryOverPalette } from "./paletteCarryOver.js";
 import { executeRun } from "./RunExecutor.js";
 import type { SessionStore } from "./SessionStore.js";
 
 type SingleRunGateway = Pick<
   IAsepriteGateway,
-  "getSpriteInfo" | "createSprite" | "readImage" | "getPalette" | "frameOp" | "tagOp"
+  "getSpriteInfo" | "createSprite" | "readImage" | "getPalette" | "setPalette" | "frameOp" | "tagOp"
 >;
 
 export interface SingleRunDeps {
@@ -97,14 +98,16 @@ export class SingleRunService implements IChatRequestHandler {
     throw new UserFacingError("Open or create a sprite first.");
   }
 
-  private createSprite(request: ChatSendRequest): Promise<SpriteInfo> {
+  private async createSprite(request: ChatSendRequest): Promise<SpriteInfo> {
     const size = request.options.size ?? DEFAULT_SPRITE_SIZE;
-    return this.deps.gateway.createSprite({
+    const info = await this.deps.gateway.createSprite({
       width: size.width,
       height: size.height,
       colorMode: "rgb",
       name: subjectName(request.text),
     });
+    await carryOverPalette(this.deps.gateway, request, [info.id]);
+    return info;
   }
 
   /**

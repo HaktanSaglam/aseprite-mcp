@@ -144,6 +144,7 @@ function countImages(history: AnthropicMessage[]): number {
 export class AnthropicChatModel implements IChatModel<AnthropicMessage> {
   readonly label = "Anthropic API";
   readonly vision = true;
+  /** "<model> <feature id>": one model rejecting an option says nothing about the others. */
   private readonly rejectedFeatures = new Set<string>();
 
   constructor(private readonly settings: AnthropicSettings) {}
@@ -163,7 +164,7 @@ export class AnthropicChatModel implements IChatModel<AnthropicMessage> {
         if (!(error instanceof ProviderHttpError) || error.status !== 400) throw error;
         const feature = applied.find((f) => f.rejected.test(error.detail));
         if (feature) {
-          this.rejectedFeatures.add(feature.id);
+          this.rejectedFeatures.add(`${model} ${feature.id}`);
           continue;
         }
         if (!repairedThinking && /signature|thinking/i.test(error.detail)) {
@@ -218,7 +219,7 @@ export class AnthropicChatModel implements IChatModel<AnthropicMessage> {
         input_schema: tool.inputSchema,
       }));
     }
-    const applied = FEATURES.filter((f) => !this.rejectedFeatures.has(f.id) && f.applies(model, request));
+    const applied = FEATURES.filter((f) => !this.rejectedFeatures.has(`${model} ${f.id}`) && f.applies(model, request));
     for (const feature of applied) feature.apply(body, request);
     const betas = applied.flatMap((f) => (f.beta ? [f.beta] : []));
     return { body, betas, applied };

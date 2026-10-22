@@ -19,11 +19,15 @@ import {
   variationPrompt,
   type PromptContext,
 } from "./promptBuilder.js";
+import { carryOverPalette } from "./paletteCarryOver.js";
 import { executeRun, type JobOutcome } from "./RunExecutor.js";
 import type { SessionStore } from "./SessionStore.js";
 import { STYLE_SPECS } from "./styleSpecs.js";
 
-type GenerationGateway = Pick<IAsepriteGateway, "createSprite" | "tagOp" | "getSpriteInfo" | "readImage" | "getPalette">;
+type GenerationGateway = Pick<
+  IAsepriteGateway,
+  "createSprite" | "tagOp" | "getSpriteInfo" | "readImage" | "getPalette" | "setPalette"
+>;
 
 export interface GenerationDeps {
   gateway: GenerationGateway;
@@ -84,6 +88,7 @@ export class GenerationService implements IChatRequestHandler {
     const names = Array.from({ length: total }, (_, i) => `${subject} (variation ${i + 1})`);
     const sprites = await this.createSprites(names, size, run.signal);
     if (!sprites) return { ok: false };
+    await carryOverPalette(this.deps.gateway, request, sprites.map((s) => s.id));
 
     const jobs = sprites.map((info, i) => ({
       info,
@@ -110,6 +115,7 @@ export class GenerationService implements IChatRequestHandler {
       run.signal,
     );
     if (!sprites) return { ok: false };
+    await carryOverPalette(this.deps.gateway, request, sprites.map((s) => s.id));
 
     const jobs = sprites.map((info, i) => ({
       info,
@@ -131,6 +137,7 @@ export class GenerationService implements IChatRequestHandler {
       name: `${subjectName(request.text)} (${order.length} directions)`,
     });
     const ref = { sprite: created.id };
+    await carryOverPalette(this.deps.gateway, request, [created.id]);
     for (const [i, direction] of order.entries()) {
       await this.deps.gateway.tagOp({ op: "add", name: direction, from: i + 1, to: i + 1 }, ref);
     }
