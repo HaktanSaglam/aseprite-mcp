@@ -17,6 +17,7 @@ interface Options {
 }
 
 const STDERR_TAIL = 4000;
+const KILL_GRACE_MS = 3000;
 
 /**
  * A child process that speaks JSON Lines on stdout (Claude Code, Codex and Gemini CLIs
@@ -37,6 +38,9 @@ export class JsonLineProcess {
       cwd: options.cwd,
       env: options.env,
       stdio: [options.stdin ?? "pipe", "pipe", "pipe"],
+      // Own process group on POSIX, so Stop also reaches processes the CLI starts itself
+      // (Gemini relaunches itself in a child node process).
+      detached: process.platform !== "win32",
     });
     // Writing to a process that already died must not crash the bridge.
     this.child.stdin?.on("error", () => {});
@@ -70,7 +74,28 @@ export class JsonLineProcess {
   }
 
   kill(): void {
-    if (this.child.exitCode === null && this.child.signalCode === null) this.child.kill("SIGTERM");
+    if (this.exitedFlag || this.child.exitCode !== null || this.child.signalCode !== null) return;
+    this.signal("SIGTERM");
+    // A CLI that ignores SIGTERM (or is busy in a child process) is killed for good.
+    const force = setTimeout(() => {
+      if (!this.exitedFlag) this.signal("SIGKILL");
+    }, KILL_GRACE_MS);
+    force.unref();
+  }
+
+  private signal(signal: NodeJS.Signals): void {
+    const pid = this.child.pid;
+    try {
+      if (pid === undefined) return;
+      if (process.platform === "win32") {
+        // cmd.exe runs the npm shim; only a tree kill reaches the node process behind it.
+        spawn("taskkill", ["/pid", String(pid), "/t", "/f"], { stdio: "ignore" }).on("error", () => {});
+      } else {
+        process.kill(-pid, signal);
+      }
+    } catch {
+      this.child.kill(signal);
+    }
   }
 
   /** Lets a CLI that already reported its result finish saving the session before a kill. */

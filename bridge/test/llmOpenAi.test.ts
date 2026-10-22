@@ -160,6 +160,18 @@ describe("OpenAiCompatibleRunner (mock server + real MCP server)", () => {
     });
   });
 
+  it("drops a message the provider rejected so follow-ups don't fail the same way", async () => {
+    api.reply({ status: 400, json: { error: { message: "Invalid image" } } }, { json: answer("ok") });
+    const r = runner();
+    const first = await collect(r.run(request({ prompt: "bad one" })));
+    expect(last(first)).toMatchObject({ ok: false });
+    const sessionId = (first.find((e) => e.type === "session") as { sessionId: string }).sessionId;
+    await collect(r.run(request({ prompt: "second", sessionId })));
+    const sent = JSON.stringify(api.requests[1]!.body.messages);
+    expect(sent).not.toContain("bad one");
+    expect(sent).toContain("second");
+  });
+
   it("retries rate limits and reports the retry", async () => {
     api.reply({ status: 429, json: { error: { message: "Rate limit reached" } } }, { json: answer("ok") });
     const events = await collect(runner().run(request()));

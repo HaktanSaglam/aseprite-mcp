@@ -88,6 +88,8 @@ export class ToolCallingAgent<M> implements ILlmRunner {
     let steps = 0;
     let host: IToolHost | undefined;
     const stats = () => ({ durationMs: Date.now() - started, turns: steps, ...usage });
+    let historyBeforeRun: number | undefined;
+    let modelReplied = false;
     try {
       host = await this.connect(request.mcpUrl);
       const systemPrompt = composeSystemPrompt(host.instructions, request.systemPrompt);
@@ -95,7 +97,7 @@ export class ToolCallingAgent<M> implements ILlmRunner {
       const contextChanged = session.contextHash !== undefined && session.contextHash !== contextHash;
       session.contextHash = contextHash;
       session.history = this.model.compact(session.history, { phase: "run_start", contextChanged });
-      const historyBeforeRun = session.history.length;
+      historyBeforeRun = session.history.length;
       session.history.push(...this.model.userTurn(request.prompt, request.images ?? []));
 
       const maxSteps = this.options.maxSteps ?? 40;
@@ -112,7 +114,10 @@ export class ToolCallingAgent<M> implements ILlmRunner {
         }
         steps++;
         const turn: ModelTurn<M> = yield* this.completeWithRetry(session, host, systemPrompt, request);
-        if (turn.message !== undefined) session.history.push(turn.message);
+        if (turn.message !== undefined) {
+          session.history.push(turn.message);
+          modelReplied = true;
+        }
         if (turn.usage) {
           usage.inputTokens += turn.usage.inputTokens;
           usage.outputTokens += turn.usage.outputTokens;
@@ -142,6 +147,9 @@ export class ToolCallingAgent<M> implements ILlmRunner {
         session.history = this.model.compact(session.history, { phase: "step", contextChanged: false });
       }
     } catch (error) {
+      // A message the provider never answered (HTTP error, bad image) would otherwise stay
+      // in the history and break every follow-up the same way.
+      if (!modelReplied && historyBeforeRun !== undefined) session.history.length = historyBeforeRun;
       yield {
         type: "done",
         ok: false,
