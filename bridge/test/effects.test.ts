@@ -309,3 +309,22 @@ describe("dropShadow", () => {
     expect(rows(dropShadow(art, { dx: -1, dy: -1, color: parseHex("#000000") }).image)).toEqual(["K..", ".R.", "..."]);
   });
 });
+
+describe("cleanup keeps patterns", () => {
+  it("does not treat checkerboard dither or 1px diagonals as noise", async () => {
+    const { findNoise } = await import("../src/pixel/effects/cleanup.js");
+    const { createRgbaImage } = await import("../src/pixel/RgbaImage.js");
+    const size = 6;
+    const img = createRgbaImage(size, size);
+    for (let y = 0; y < size; y++) {
+      for (let x = 0; x < size; x++) img.data.set((x + y) % 2 ? [40, 40, 40, 255] : [44, 44, 44, 255], (y * size + x) * 4);
+    }
+    expect(findNoise(img, "all")).toEqual([]);
+    expect(findNoise(img, "similar")).toEqual([]);
+    // A real stray pixel is still found.
+    const flat = createRgbaImage(5, 5);
+    for (let i = 0; i < 25; i++) flat.data.set([40, 40, 40, 255], i * 4);
+    flat.data.set([44, 44, 44, 255], 12 * 4);
+    expect(findNoise(flat, "similar").map((n) => n.index)).toEqual([12]);
+  });
+});

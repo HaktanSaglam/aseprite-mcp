@@ -13,7 +13,10 @@ const CHAT_TIMEOUT_MS = 15 * 60_000;
 function readJson(req: IncomingMessage): Promise<AsepriteEvent> {
   return new Promise((resolve, reject) => {
     let body = "";
-    req.on("data", (chunk) => (body += chunk));
+    req.on("data", (chunk) => {
+      body += chunk;
+      if (body.length > 1_000_000) req.destroy(new Error("Request body too large"));
+    });
     req.on("end", () => {
       try {
         resolve(JSON.parse(body || "{}"));
@@ -96,6 +99,9 @@ export function startDevServer(options: Options, events: TappedEvents): Promise<
   const http = createServer(async (req, res) => {
     if (!allowedHosts.has(req.headers.host ?? "")) return send(res, 403, { error: "Host not allowed" });
     if (req.method !== "POST") return send(res, 405, { error: "POST only" });
+    // Web pages may send "simple" cross-origin POSTs without a preflight; browsers always
+    // add an Origin header to them, and command-line tools don't.
+    if (req.headers.origin !== undefined) return send(res, 403, { error: "Browser requests are not allowed" });
     try {
       const body = await readJson(req);
       switch (req.url) {

@@ -55,6 +55,13 @@ export function findNoise(image: RgbaImage, mode: NoiseMode = "similar"): { inde
       });
       const own = i * 4;
       if (!enclosed || sameAs(own, ref)) continue;
+      // A diagonal neighbour of the same color means a pattern (checkerboard dither, a
+      // 1px diagonal line), not a stray pixel.
+      const patterned = [[-1, -1], [1, -1], [-1, 1], [1, 1]].some(([dx, dy]) => {
+        const n = (y + dy) * width + x + dx;
+        return mask[n] === 1 && sameAs(n * 4, own);
+      });
+      if (patterned) continue;
       const around: Rgba = [data[ref], data[ref + 1], data[ref + 2], data[ref + 3]];
       if (mode === "similar" && colorDistance([data[own], data[own + 1], data[own + 2]], around) > SIMILAR_NOISE_DISTANCE) {
         continue;

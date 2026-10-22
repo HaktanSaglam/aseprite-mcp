@@ -76,9 +76,12 @@ export class AsepriteSocket implements IAsepriteRpc, IAsepriteEvents {
         host: this.options.host,
         port: this.options.port,
         verifyClient: ({ origin }: { origin?: string }) => isNonBrowserOrigin(origin),
+        // A 1024x1024 RGBA read is 8 MB of hex; leave room for big canvases and frame batches.
+        maxPayload: 512 * 1024 * 1024,
       });
       server.once("listening", () => resolve());
       server.once("error", reject);
+      server.on("error", (error) => log(`WebSocket server error: ${error.message}`));
       server.on("connection", (socket) => this.attach(socket));
       this.server = server;
     });
@@ -137,6 +140,8 @@ export class AsepriteSocket implements IAsepriteRpc, IAsepriteEvents {
     log(wasConnected ? `Aseprite connected again (${this.sockets.length} connections open)` : "Aseprite connected");
     if (!wasConnected) this.emitConnection(true);
 
+    // Without a listener, a socket error (e.g. a frame over maxPayload) would crash the bridge.
+    socket.on("error", (error) => log(`Aseprite connection error: ${error.message}`));
     socket.on("message", (raw) => this.onMessage(raw.toString()));
     socket.on("close", (code, reason) => {
       this.sockets = this.sockets.filter((s) => s !== socket);

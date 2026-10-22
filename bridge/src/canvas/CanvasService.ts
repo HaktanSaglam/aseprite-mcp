@@ -34,6 +34,13 @@ export interface LayerTarget extends SpriteRef {
 
 type CanvasGateway = IPixelGateway & ISelectionGateway & Pick<ISpriteGateway, "getSpriteInfo">;
 
+function sameImage(a: RgbaImage, b: RgbaImage): boolean {
+  if (a.width !== b.width || a.height !== b.height) return false;
+  return Buffer.from(a.data.buffer, a.data.byteOffset, a.data.length).equals(
+    Buffer.from(b.data.buffer, b.data.byteOffset, b.data.length),
+  );
+}
+
 export function resolveFrames(selector: FrameSelector | undefined, info: SpriteInfo): number[] {
   if (selector === undefined || selector === "current") return [info.activeFrame];
   if (selector === "all") return info.frames.map((f) => f.index);
@@ -97,9 +104,11 @@ export class CanvasService {
       const { image } = await this.gateway.readImage({ frame, layer: target.layer, ...ref });
       const edited = edit(image, frame);
       const result = filter ? compose(image, edited, "replace", { x: 0, y: 0 }, filter) : edited;
+      // Rewriting an unchanged frame would still unlink its cel and add an undo step.
+      if (sameImage(image, result)) continue;
       writes.push({ x: 0, y: 0, image: result, frame, layer: target.layer });
     }
-    await this.gateway.writeImages(writes, ref);
+    if (writes.length > 0) await this.gateway.writeImages(writes, ref);
     return { frames };
   }
 

@@ -42,7 +42,7 @@ export async function resolveProvider(
     info,
     runner: registry.runner(id),
     // Any id is passed through: providers accept models newer than their built-in list.
-    model: options.model || info.models[0]?.id,
+    model: options.model || info.defaultModel || info.models[0]?.id,
     effort: resolveEffort(options.effort, info.efforts),
   };
 }

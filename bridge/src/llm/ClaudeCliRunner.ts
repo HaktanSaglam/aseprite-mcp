@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { CLAUDE_MCP_SERVER, claudeErrorMessage, claudeUserMessage, parseClaudeLine } from "./claudeStream.js";
 import { JsonLineProcess, type ProcessOutput } from "./cli/JsonLineProcess.js";
 import { which } from "./cli/which.js";
+import { claudeChildEnv } from "./claudeEnv.js";
 import type { ILlmRunner, LlmEvent, LlmRunRequest } from "./LlmRunner.js";
 
 interface Options {
@@ -23,19 +24,6 @@ const TOOL_PATTERN = `mcp__${CLAUDE_MCP_SERVER}__*`;
 const DEFAULT_IDLE_MS = 10 * 60_000;
 const INSTALL_HINT =
   "Install it with `npm install -g @anthropic-ai/claude-code` and run `claude auth login`, or set CLAUDE_PATH to its full path.";
-
-/**
- * Variables that mark "running inside another Claude Code session". Inheriting them
- * (e.g. when the bridge is started from a Claude terminal) makes the child use the
- * parent's short-lived credentials instead of the user's own login.
- */
-function childEnv(): NodeJS.ProcessEnv {
-  const env = { ...process.env };
-  for (const key of Object.keys(env)) {
-    if (key === "CLAUDECODE" || key.startsWith("CLAUDE_CODE_")) delete env[key];
-  }
-  return env;
-}
 
 /** A CLI process can only continue a conversation started with the same flags. */
 function processKey(request: LlmRunRequest): string {
@@ -129,7 +117,7 @@ export class ClaudeCliRunner implements ILlmRunner {
     if (resumeId) args.push("--resume", resumeId);
 
     const command = which(this.options.claudePath) ?? this.options.claudePath;
-    const proc = new JsonLineProcess(command, args, { cwd: this.options.workDir, env: childEnv() });
+    const proc = new JsonLineProcess(command, args, { cwd: this.options.workDir, env: claudeChildEnv() });
     return {
       proc,
       key: processKey(request),
