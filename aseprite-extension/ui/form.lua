@@ -41,10 +41,12 @@ return function(C, S)
     end)
   end
 
-  function Form:track(id, kind, spec)
-    spec.kind = kind
-    self.widgets[id] = spec
-    self.order[#self.order + 1] = id
+  -- spec: the builder's spec (its showIf is kept); w: what the form remembers.
+  function Form:track(spec, kind, w)
+    w.kind = kind
+    w.showIf = spec.showIf
+    self.widgets[spec.id] = w
+    self.order[#self.order + 1] = spec.id
   end
 
   local function hexOf(color)
@@ -61,9 +63,10 @@ return function(C, S)
   -- Widget builders ------------------------------------------------------------
   -- spec fields: id (required), key (setting name, optional), label, plus the
   -- Dialog fields of that widget. onchange/onclick are wrapped automatically.
+  -- showIf(settingsSnapshot) -> bool, optional: see Form:applyVisibility.
 
   function Form:entry(spec)
-    self:track(spec.id, "entry", { key = spec.key, onchange = spec.onchange })
+    self:track(spec, "entry", { key = spec.key, onchange = spec.onchange })
     self.dlg:entry{
       id = spec.id, label = spec.label,
       text = spec.key and S.get(self.prefs, spec.key) or spec.text or "",
@@ -73,7 +76,7 @@ return function(C, S)
   end
 
   function Form:number(spec)
-    self:track(spec.id, "number", { key = spec.key, onchange = spec.onchange })
+    self:track(spec, "number", { key = spec.key, onchange = spec.onchange })
     local value = spec.key and S.get(self.prefs, spec.key) or spec.value or 0
     self.dlg:number{
       id = spec.id, label = spec.label, text = tostring(value), decimals = 0,
@@ -82,7 +85,7 @@ return function(C, S)
   end
 
   function Form:check(spec)
-    self:track(spec.id, "check", { key = spec.key, onchange = spec.onchange })
+    self:track(spec, "check", { key = spec.key, onchange = spec.onchange })
     self.dlg:check{
       id = spec.id, label = spec.label, text = spec.text,
       selected = spec.key and S.get(self.prefs, spec.key) or spec.selected or false,
@@ -91,7 +94,7 @@ return function(C, S)
   end
 
   function Form:slider(spec)
-    self:track(spec.id, "slider", { key = spec.key, onchange = spec.onchange, min = spec.min, max = spec.max })
+    self:track(spec, "slider", { key = spec.key, onchange = spec.onchange, min = spec.min, max = spec.max })
     self.dlg:slider{
       id = spec.id, label = spec.label, min = spec.min, max = spec.max,
       value = spec.key and S.get(self.prefs, spec.key) or spec.value or spec.min,
@@ -101,7 +104,7 @@ return function(C, S)
 
   -- list: static {id, label} list, or a function returning the current one (providers).
   function Form:combo(spec)
-    self:track(spec.id, "combo", { key = spec.key, list = spec.list, onchange = spec.onchange })
+    self:track(spec, "combo", { key = spec.key, list = spec.list, onchange = spec.onchange })
     local list = type(spec.list) == "function" and spec.list() or spec.list
     local selectedId = spec.selected
     if selectedId == nil and spec.key then selectedId = S.get(self.prefs, spec.key) end
@@ -114,7 +117,7 @@ return function(C, S)
   end
 
   function Form:color(spec)
-    self:track(spec.id, "color", { key = spec.key, onchange = spec.onchange })
+    self:track(spec, "color", { key = spec.key, onchange = spec.onchange })
     self.dlg:color{
       id = spec.id, label = spec.label,
       color = colorOf(S.get(self.prefs, spec.key)),
@@ -123,7 +126,7 @@ return function(C, S)
   end
 
   function Form:label(spec)
-    self:track(spec.id, "label", {})
+    self:track(spec, "label", {})
     self.dlg:label{ id = spec.id, label = spec.label, text = spec.text or "" }
   end
 
@@ -146,7 +149,7 @@ return function(C, S)
   end
 
   function Form:button(spec)
-    self:track(spec.id, "button", {})
+    self:track(spec, "button", {})
     local handler = self:safe(spec.onclick)
     self.buttons[spec.id] = handler
     self.dlg:button{
@@ -214,6 +217,23 @@ return function(C, S)
     self:quietly(function()
       self.dlg:modify{ id = id, option = C.labelOf(listOf(w), selectedId) }
     end)
+  end
+
+  -- Shows exactly the widgets whose showIf holds for the settings snapshot `s`. A row
+  -- whose widgets are all hidden takes no room (labels hide with their widget), which
+  -- is how one tab can offer many option sets without growing the window. Only changes
+  -- are sent: every visibility modify() relayouts the dialog.
+  function Form:applyVisibility(s)
+    for _, id in ipairs(self.order) do
+      local w = self.widgets[id]
+      if w.showIf then
+        local visible = w.showIf(s) and true or false
+        if w.visible ~= visible then
+          w.visible = visible
+          self.dlg:modify{ id = id, visible = visible }
+        end
+      end
+    end
   end
 
   function Form:enable(id, enabled)

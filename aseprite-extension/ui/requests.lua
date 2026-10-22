@@ -329,6 +329,15 @@ return function(C)
     },
   }
 
+  -- The R.TOOLS key the Tools tab's Apply button runs for the picked tool. Outline is one
+  -- choice in the picker but two keys here, because the picked color changes the params.
+  function R.applyKey(s)
+    if s.toolChoice == "outline" then
+      return s.toolOutlineMode == "color" and "outline_color" or "outline_auto"
+    end
+    return s.toolChoice
+  end
+
   function R.tool(key, requestId, s, ctx)
     local def = R.TOOLS[key]
     if not def then return nil, "Unknown tool: " .. tostring(key) end

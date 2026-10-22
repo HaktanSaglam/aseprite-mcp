@@ -6,7 +6,13 @@
 --   * modify{options} refills a combobox and, like ComboBox::addItem, selects the first
 --     item and fires onchange; modify{option} fires onchange when the index changes.
 --   * Callbacks only run while the dialog is shown; close() runs onclose.
--- Methods starting with "_" simulate the user (click, type, pick an option).
+--   * Rows (Dialog_add_widget): a widget joins the current row only when it has no
+--     label, is of the same type as the previous widget, and no newrow() or tab()
+--     came in between; a separator always gets its own row. Each widget records its
+--     row in w.row. modify{visible} hides a widget; a row whose widgets are all hidden
+--     takes no room (ui::Grid skips hidden cells), which D:_rows reflects.
+-- Methods starting with "_" simulate the user (click, type, pick an option); like a
+-- real user they can't reach hidden widgets.
 
 local Fakes = {}
 
@@ -79,6 +85,9 @@ end
 local D = {}
 Fakes.instances = {}
 
+-- Widget types as Aseprite compares them for rows: Dialog:number is an Entry.
+local ROW_TYPE = { number = "entry" }
+
 local function fire(dlg, fn, ev)
   if fn and dlg.shown then fn(ev or {}) end
 end
@@ -102,6 +111,12 @@ local function add(dlg, kind, spec)
   if kind == "color" then w.color = spec.color or Color{ r = 0, g = 0, b = 0, a = 0 } end
   if spec.focus then w.focusMagnet = true end
   w.tab = dlg.currentTab
+  local rowType = ROW_TYPE[kind] or kind
+  if spec.label ~= nil or not dlg.rowOpen or dlg.rowType ~= rowType or kind == "separator" then
+    dlg.rowCount = (dlg.rowCount or 0) + 1
+  end
+  dlg.rowOpen, dlg.rowType = true, rowType
+  w.row = dlg.rowCount
   dlg.widgets[#dlg.widgets + 1] = w
   if spec.id then
     assert(dlg.byId[spec.id] == nil, "duplicate widget id " .. spec.id)
@@ -118,12 +133,18 @@ for _, kind in ipairs({ "entry", "number", "label", "check", "button", "slider",
 end
 
 function D:radio(spec) return add(self, "check", spec) end
-function D:newrow() return self end
 
+function D:newrow()
+  self.rowOpen = false
+  return self
+end
+
+-- Each tab page is a grid of its own, so its first widget starts a row.
 function D:tab(spec)
   self.tabs = self.tabs or {}
   self.tabs[#self.tabs + 1] = { id = spec.id or spec.text, text = spec.text }
   self.currentTab = spec.id or spec.text
+  self.rowOpen = false
   return self
 end
 
@@ -133,6 +154,7 @@ function D:endtabs(spec)
     if t.id == spec.selected or t.text == spec.selected then selected = t.id end
   end
   self.currentTab = nil
+  self.rowOpen = false
   local w = { kind = "tabs", id = spec.id, selected = selected, tabs = self.tabs, onchange = spec.onchange }
   self.widgets[#self.widgets + 1] = w
   if spec.id then self.byId[spec.id] = w end
@@ -289,10 +311,33 @@ function D:_widget(id)
   return w
 end
 
+-- A widget the user can see (tab pages aside): asserts it isn't hidden by modify{}.
+function D:_visible(id)
+  local w = self:_widget(id)
+  assert(w.visible, id .. " is hidden")
+  return w
+end
+
+-- The rows of one tab page as the user sees them: lists of visible widget ids, in
+-- order. Rows whose widgets are all hidden are left out because they take no room.
+function D:_rows(tabId)
+  local rows, byRow = {}, {}
+  for _, w in ipairs(self.widgets) do
+    if w.tab == tabId and w.row and w.visible then
+      if not byRow[w.row] then
+        byRow[w.row] = {}
+        rows[#rows + 1] = byRow[w.row]
+      end
+      table.insert(byRow[w.row], w.id or w.kind)
+    end
+  end
+  return rows
+end
+
 -- Like a real click: ignored when disabled or not visible.
 function D:_click(id)
   local w = self:_widget(id)
-  if not w.enabled then return false end
+  if not w.enabled or not w.visible then return false end
   if w.kind == "check" then w.selected = not w.selected end
   if w.kind == "button" then self.lastButton = w end
   fire(self, w.spec.onclick)
@@ -300,13 +345,13 @@ function D:_click(id)
 end
 
 function D:_type(id, text)
-  local w = self:_widget(id)
+  local w = self:_visible(id)
   w.text = text
   fire(self, w.spec.onchange)
 end
 
 function D:_choose(id, label)
-  local w = self:_widget(id)
+  local w = self:_visible(id)
   assert(w.enabled, id .. " is disabled")
   local found = false
   for _, o in ipairs(w.options) do
@@ -317,7 +362,7 @@ function D:_choose(id, label)
 end
 
 function D:_slide(id, value)
-  local w = self:_widget(id)
+  local w = self:_visible(id)
   w.value = value
   fire(self, w.spec.onchange)
 end

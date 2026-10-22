@@ -104,7 +104,8 @@ test("opens one non-modal window with five tabs and paints every canvas", functi
   dlg:repaint()
   truthy(dlg:_widget("header").lastGc:allText():find("Connected"), "header shows status")
   truthy(dlg:_widget("log").lastGc:allText():find("Ask the AI"), "empty log shows tips")
-  truthy(dlg:_widget("help").lastGc:allText():find("npm start"), "help text")
+  truthy(dlg:_widget("help1").text:find("npm start"), "help text")
+  eq(dlg:_widget("providerInfo").text, "Built-in list. The bridge updates it once connected.")
   -- Opening again keeps the same dialog.
   env.window.open()
   eq(env.dlg, Fakes.instances[#Fakes.instances])
@@ -123,13 +124,39 @@ test("built-in Claude models before bridge_info, bridge list after", function()
   local env = setup()
   local dlg = env.open()
   eq(table.concat(dlg:_widget("chatModel").options, ","), "Fable,Opus,Sonnet,Haiku")
+  eq(dlg:_widget("chatModel").option, "Opus", "not the newest, slowest model")
+  eq(dlg:_widget("settingsModel").option, "Opus")
   eq(dlg:_widget("chatEffort").option, "Balanced")
+  truthy(env.headerText():find("Opus · Balanced", 1, true), env.headerText())
   env.conn.event(BRIDGE_INFO)
+  eq(dlg:_widget("providerInfo").text, "Ready")
   eq(table.concat(dlg:_widget("chatModel").options, ","), "Opus,Sonnet")
   eq(table.concat(dlg:_widget("settingsModel").options, ","), "Opus,Sonnet")
   local providers = table.concat(dlg:_widget("settingsProvider").options, ",")
   eq(providers, "Claude Code,Gemini CLI,Codex CLI (not set up)")
   eq(table.concat(dlg:_widget("chatEffort").options, ","), "Fast,Balanced,Smart,Smart+,Max")
+end)
+
+test("the bridge's defaultModel is selected unless the user picked a model", function()
+  local info = {
+    event = "bridge_info", version = "2", defaultProvider = "claude-code",
+    providers = { {
+      id = "claude-code", label = "Claude Code", defaultModel = "opus",
+      models = { { id = "fable", label = "Fable (newest)" }, { id = "opus", label = "Opus" }, { id = "haiku", label = "Haiku" } },
+      efforts = { "low", "medium", "high" }, available = true, supportsImages = true,
+    } },
+  }
+  local env = setup()
+  local dlg = env.open()
+  env.conn.event(info)
+  eq(dlg:_widget("chatModel").option, "Opus")
+  eq(dlg:_widget("settingsModel").option, "Opus")
+  eq(dlg:_widget("chatEffort").option, "Balanced")
+  eq(env.prefs.model, nil, "a default is not saved as the user's choice")
+
+  local picked = setup({ model = "haiku" })
+  picked.conn.event(info)
+  eq(picked.open():_widget("chatModel").option, "Haiku", "saved choice kept")
 end)
 
 test("bridge_info received while closed is used when the window opens", function()
@@ -442,9 +469,10 @@ test("tools send tool_run and show the result", function()
   local env = setup()
   local dlg = env.open("tools")
   eq(dlg:_widget("toolLayer").text, "Layer 1")
+  eq(dlg:_widget("toolChoice").option, "Remove background", "default tool")
   dlg:_slide("toolTolerance", 30)
   dlg:_click("toolAllFrames")
-  dlg:_click("toolRemoveBg")
+  dlg:_click("toolApply")
   local p = env.conn.last()
   eq(p.event, "tool_run")
   eq(p.tool, "remove_background")
@@ -486,10 +514,12 @@ test("tools validate scope and nested layer paths", function()
   local p = env.conn.last()
   eq(p.params.layer, "Body/Arm", "group path")
   eq(p.params.selectionOnly, true)
-  dlg:_click("toolAdjust")
+  dlg:_choose("toolChoice", "Adjust colors")
+  dlg:_click("toolApply")
   truthy(dlg:_widget("toolStatus").text:find("slider"), "adjust needs a slider")
   dlg:_slide("toolHue", 40)
-  dlg:_click("toolAdjust")
+  dlg:_click("toolApply")
+  eq(env.conn.last().tool, "adjust_colors")
   eq(env.conn.last().params.hue, 40)
   dlg:_click("toolAdjustReset")
   eq(dlg:_widget("toolHue").value, 0)
@@ -501,18 +531,73 @@ test("tools validate scope and nested layer paths", function()
   truthy(dlg:_widget("toolStatus").text:find("is a group"), dlg:_widget("toolStatus").text)
 end)
 
-test("outline tools send the picked color only for Use color", function()
+test("outline sends the picked color only for Pick color", function()
   closeAllSprites()
   newSprite()
   local env = setup()
   local dlg = env.open("tools")
+  dlg:_choose("toolChoice", "Outline")
+  eq(dlg:_widget("toolOutlineColor").visible, false, "no color to pick for Auto shade")
   dlg:_choose("toolOutlinePlacement", "Inside")
-  dlg:_click("toolOutlineAuto")
+  dlg:_click("toolApply")
+  eq(env.conn.last().tool, "add_outline")
   eq(env.conn.last().params.color, nil)
   eq(env.conn.last().params.placement, "inside")
+  dlg:_choose("toolOutlineMode", "Pick color")
+  eq(dlg:_widget("toolOutlineColor").visible, true, "color shown once it is used")
   dlg:_widget("toolOutlineColor").color = Color{ r = 255, g = 0, b = 128 }
-  dlg:_click("toolOutlineColorRun")
+  dlg:_click("toolApply")
   eq(env.conn.last().params.color, "#ff0080")
+  eq(env.prefs.toolOutlineMode, "color", "remembered")
+end)
+
+-- Every setting the Tools tab can show; each tool shows its own, the rest are hidden.
+local TOOL_PARAMS = {
+  "toolTolerance", "toolOutlinePlacement", "toolOutlineMode", "toolOutlineColor", "toolColors",
+  "toolPalette", "toolDither", "toolHue", "toolSaturation", "toolLightness", "toolAdjustReset",
+}
+local TOOL_PICKS = {
+  { label = "Remove background", tool = "remove_background", shows = { "toolTolerance" } },
+  { label = "Outline", tool = "add_outline", shows = { "toolOutlinePlacement", "toolOutlineMode" } },
+  { label = "Reduce colors", tool = "reduce_colors", shows = { "toolColors", "toolDither" } },
+  { label = "Apply palette", tool = "apply_palette", shows = { "toolPalette", "toolDither" } },
+  { label = "Adjust colors", tool = nil, shows = { "toolHue", "toolSaturation", "toolLightness", "toolAdjustReset" } },
+  { label = "Clean up stray pixels", tool = "cleanup_pixels", shows = {} },
+  { label = "Drop shadow", tool = "drop_shadow", shows = {} },
+}
+
+test("the Tool picker shows only the picked tool's settings and Apply runs it", function()
+  closeAllSprites()
+  newSprite()
+  local env = setup()
+  local dlg = env.open("tools")
+  eq(#dlg:_widget("toolChoice").options, #TOOL_PICKS, "every tool is in the picker")
+  for _, pick in ipairs(TOOL_PICKS) do
+    dlg:_choose("toolChoice", pick.label)
+    local shown = {}
+    for _, id in ipairs(pick.shows) do shown[id] = true end
+    for _, id in ipairs(TOOL_PARAMS) do
+      eq(dlg:_widget(id).visible, shown[id] == true, pick.label .. ": " .. id .. " visible")
+    end
+    -- The one-click buttons never hide.
+    for _, id in ipairs({ "toolApply", "toolFlipH", "toolRotate", "toolShiftDown", "toolUndo", "toolRedo", "toolStatus" }) do
+      eq(dlg:_widget(id).visible, true, pick.label .. ": " .. id)
+    end
+    local sent = #env.conn.sent
+    dlg:_click("toolApply")
+    if pick.tool then
+      eq(env.conn.last().tool, pick.tool, pick.label .. " sends its tool")
+    else
+      eq(#env.conn.sent, sent, pick.label .. " needs a slider first")
+    end
+  end
+  -- The choice survives closing the window.
+  dlg:_choose("toolChoice", "Reduce colors")
+  env.window.close()
+  local again = env.open()
+  eq(again:_widget("toolChoice").option, "Reduce colors")
+  eq(again:_widget("toolColors").visible, true)
+  eq(again:_widget("toolTolerance").visible, false, "hidden before the first show")
 end)
 
 test("unanswered tool calls time out", function()
@@ -524,6 +609,50 @@ test("unanswered tool calls time out", function()
   Fakes.advance(60)
   Fakes.tickAll()
   truthy(dlg:_widget("toolStatus").text:find("no answer"), dlg:_widget("toolStatus").text)
+end)
+
+-- Layout -----------------------------------------------------------------------------------------
+
+-- The window must fit a 13" laptop at 200% UI scale (about 440 px tall): the tallest tab
+-- page gets about nine short rows. Rows follow Aseprite's rules (see tests/ui_fakes.lua).
+test("compact layout: pairs share rows and no tab page is taller than nine rows", function()
+  local env = setup()
+  local dlg = env.open()
+  local function sameRow(a, b) eq(dlg:_widget(a).row, dlg:_widget(b).row, a .. " and " .. b .. " share a row") end
+  sameRow("genSize", "genStyle")
+  sameRow("genPalette", "genView")
+  sameRow("genTarget", "genVariations")
+  sameRow("genOutline", "genTransparent")
+  sameRow("genGenerate", "genDir8")
+  sameRow("toolSelectionOnly", "toolAllFrames")
+  sameRow("toolOutlinePlacement", "toolOutlineMode")
+  sameRow("toolHue", "toolLightness")
+  sameRow("toolApply", "toolAdjustReset")
+  sameRow("toolFlipH", "toolRotate")
+  sameRow("toolShiftLeft", "toolRedo")
+  sameRow("settingsModel", "settingsEffort")
+  sameRow("settingsAutoReview", "settingsShowTools")
+  truthy(dlg:_widget("genPrompt").row < dlg:_widget("genSize").row, "prompt comes first")
+
+  eq(#dlg:_rows("tab_chat"), 6, "chat rows")
+  eq(#dlg:_rows("tab_generate"), 8, "generate rows")
+  eq(#dlg:_rows("tab_animate"), 6, "animate rows")
+  eq(#dlg:_rows("tab_settings"), 9, "settings rows (four are one-line labels)")
+  for _, pick in ipairs(TOOL_PICKS) do
+    dlg:_choose("toolChoice", pick.label)
+    truthy(#dlg:_rows("tab_tools") <= 9, pick.label .. ": " .. #dlg:_rows("tab_tools") .. " rows")
+  end
+  dlg:_choose("toolChoice", "Outline")
+  dlg:_choose("toolOutlineMode", "Pick color")
+  eq(#dlg:_rows("tab_tools"), 9, "outline with a color: the tallest tools page")
+
+  -- Tab pages don't hide canvases, so every canvas sits above the tabs.
+  for _, w in ipairs(dlg.widgets) do
+    if w.kind == "canvas" then eq(w.tab, nil, "canvas " .. tostring(w.id) .. " outside the tab pages") end
+  end
+  eq(dlg:_widget("header").spec.height, 30)
+  eq(dlg:_widget("log").spec.height, 130)
+  eq(dlg:_widget("log").spec.vexpand, true, "a taller window grows the log")
 end)
 
 -- Settings ---------------------------------------------------------------------------------------
@@ -539,6 +668,7 @@ test("provider change refills models and disables effort when unsupported", func
   eq(dlg:_widget("chatEffort").enabled, false)
   dlg:_choose("settingsProvider", "Codex CLI (not set up)")
   eq(dlg:_widget("chatModel").option, "GPT-5")
+  eq(dlg:_widget("providerInfo").text, "Not set up: Install the Codex CLI.")
   truthy(env.logText():find("not set up"), "explains")
   dlg:_choose("settingsProvider", "Claude Code")
   eq(dlg:_widget("settingsEffort").enabled, true)
@@ -648,6 +778,21 @@ test("ui_debug drives the window in devMode", function()
   eq(p.text, "a slime")
   eq(p.options.palette, "pico8")
   eq(p.options.size.width, 16)
+  env.conn.event({ event = "ui_debug", action = "tab", tab = "tools" })
+  env.conn.event({ event = "ui_debug", action = "set", id = "toolChoice", value = "drop_shadow" })
+  eq(env.conn.last().ok, true)
+  eq(dlg:_widget("toolTolerance").visible, false, "set runs the picker's change handler")
+  env.conn.event({ event = "ui_debug", action = "click", id = "toolApply" })
+  local shadow
+  for i = #env.conn.sent, 1, -1 do
+    local m = json.decode(env.conn.sent[i])
+    if m.event == "tool_run" then
+      shadow = m
+      break
+    end
+  end
+  truthy(shadow, "tool_run sent")
+  eq(shadow.tool, "drop_shadow")
   env.conn.event({ event = "ui_debug", action = "tab", tab = "settings" })
   eq(dlg.data.tabs, "tab_settings")
   env.conn.event({ event = "ui_debug", action = "set", id = "settingsProvider", value = "claude-code" })

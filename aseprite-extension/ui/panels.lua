@@ -1,17 +1,17 @@
--- The custom-painted panels besides the chat log: the status header, the provider
--- info box and the help box. Deciding WHAT they say is pure (headerModel,
--- providerLines) and tested; painting maps it onto a GraphicsContext with colors
--- derived from the active theme.
+-- What the status panels say: the painted header above the tabs, plus the provider
+-- status and help lines the Settings tab shows in native labels. Deciding WHAT they say
+-- is pure (headerModel, providerLines) and tested; painting maps the header onto a
+-- GraphicsContext with colors derived from the active theme.
 
-return function(textRender, W, T, F, Header)
+return function(T, F, Header)
   local Panels = {}
 
+  -- One native label per line, and labels don't wrap: each line must fit the narrowest
+  -- window on its own (about 45 characters of the pixel font).
   Panels.HELP = {
-    "1. Start the bridge: in the bridge folder run npm start. The dot above turns green.",
-    "2. Chat: describe a change and press Enter. With Use selection, edits stay inside the marquee.",
-    "3. Generate and Animate: pick options, press the button. Every AI edit is one Ctrl+Z.",
-    "4. Tools run instantly, without AI.",
-    "Other MCP clients can connect to http://127.0.0.1:7800/mcp",
+    "Start the bridge: npm start (bridge folder).",
+    "Use selection: AI edits stay in the marquee.",
+    "MCP clients: http://127.0.0.1:7800/mcp",
   }
 
   -- Header -----------------------------------------------------------------------------
@@ -47,14 +47,6 @@ return function(textRender, W, T, F, Header)
     return { { text = text, role = "ok" } }
   end
 
-  function Panels.helpLines()
-    local lines = {}
-    for i, text in ipairs(Panels.HELP) do
-      lines[i] = { text = text, role = i == #Panels.HELP and "dim" or "text" }
-    end
-    return lines
-  end
-
   -- Painting -----------------------------------------------------------------------------
 
   local cache = { key = nil, colors = nil }
@@ -86,23 +78,6 @@ return function(textRender, W, T, F, Header)
     local colors = Panels.colors()
     fill(gc, colors)
     Header.paint(gc, colors, model)
-  end
-
-  -- lines: {text, role}[]; wrapped to the panel width, cut at its bottom edge.
-  function Panels.paintLines(gc, lines)
-    local colors = Panels.colors()
-    fill(gc, colors)
-    local function measure(s) return textRender.measure(gc, s) end
-    local lineHeight = textRender.lineHeight(gc) + 2
-    local y = 4
-    for _, item in ipairs(lines) do
-      gc.color = colors[item.role] or colors.text
-      for _, line in ipairs(W.wrap(item.text, gc.width - 12, measure)) do
-        if y + lineHeight > gc.height then return end
-        textRender.draw(gc, line, 6, y)
-        y = y + lineHeight
-      end
-    end
   end
 
   return Panels

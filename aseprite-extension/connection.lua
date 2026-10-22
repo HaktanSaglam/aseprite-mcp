@@ -42,10 +42,13 @@ local function handleText(data, dispatch)
   local okDecode, msg = pcall(json.decode, data)
   if not okDecode or msg == nil then return end
 
-  if msg.id == nil then
-    if msg.event ~= nil then emit("event", msg) end
+  -- Events first: an event may carry its own "id" field (ui_debug's widget id), and
+  -- requests from the bridge never have an "event" field.
+  if msg.event ~= nil then
+    emit("event", msg)
     return
   end
+  if msg.id == nil then return end
 
   local ok, result = pcall(dispatch, msg.method, msg.params)
   if ok then

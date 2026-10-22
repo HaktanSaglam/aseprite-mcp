@@ -101,7 +101,27 @@ C.OUTLINE_PLACEMENTS = {
   { id = "inside", label = "Inside" },
 }
 
+-- Where the outline color comes from: shaded from the sprite, or the picked color.
+C.OUTLINE_COLORS = {
+  { id = "auto", label = "Auto shade" },
+  { id = "color", label = "Pick color" },
+}
+
+-- The Tools tab's picker. Each id is a requests.TOOLS key, except "outline", which
+-- requests.applyKey splits by C.OUTLINE_COLORS.
+C.TOOL_CHOICES = {
+  { id = "remove_background", label = "Remove background" },
+  { id = "outline", label = "Outline" },
+  { id = "reduce_colors", label = "Reduce colors" },
+  { id = "apply_palette", label = "Apply palette" },
+  { id = "adjust_colors", label = "Adjust colors" },
+  { id = "cleanup_pixels", label = "Clean up stray pixels" },
+  { id = "drop_shadow", label = "Drop shadow" },
+}
+
 -- Used until the bridge sends bridge_info (or forever with an older bridge).
+-- defaultModel mirrors the bridge's: Fable is the newest but slow and expensive, so a
+-- first run shouldn't land on it.
 C.FALLBACK_PROVIDERS = {
   {
     id = "claude-code",
@@ -112,6 +132,7 @@ C.FALLBACK_PROVIDERS = {
       { id = "sonnet", label = "Sonnet" },
       { id = "haiku", label = "Haiku" },
     },
+    defaultModel = "opus",
     efforts = { "low", "medium", "high", "xhigh", "max" },
     available = true,
     supportsImages = true,

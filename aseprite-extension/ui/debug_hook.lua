@@ -6,7 +6,8 @@
 -- The bridge (or any WebSocket peer it relays for) sends:
 --   {event = "ui_debug", action = "open" | "tab" | "set" | "click" | "close",
 --    tab? = "chat" | "generate" | "animate" | "tools" | "settings",
---    id? = widget id, value? = new value (combobox: option id or label)}
+--    widget? = widget id, value? = new value (combobox: option id or label)}
+-- ("id" is also accepted, but "widget" can't be mistaken for a request id.)
 -- and gets back {event = "ui_debug_result", action, ok, error?}.
 --
 -- Completely inert unless the user sets devMode = true in the extension preferences
@@ -31,11 +32,13 @@ function D.handle(event, prefs, view)
       if event.tab == nil then error("ui_debug tab needs a tab", 0) end
       view.selectTab(event.tab)
     elseif action == "set" then
-      if event.id == nil then error("ui_debug set needs an id", 0) end
-      view.set(event.id, event.value)
+      local widget = event.widget or event.id
+      if widget == nil then error("ui_debug set needs a widget", 0) end
+      view.set(widget, event.value)
     elseif action == "click" then
-      if event.id == nil then error("ui_debug click needs an id", 0) end
-      view.click(event.id)
+      local widget = event.widget or event.id
+      if widget == nil then error("ui_debug click needs a widget", 0) end
+      view.click(widget)
     elseif action == "close" then
       view.close()
     end

@@ -249,7 +249,7 @@ ProviderInfo = { id, label, models: [{id, label}], efforts: string[], available,
 
 With `ASEPRITE_MCP_DEV=1` the bridge opens a loopback endpoint (`127.0.0.1:7802`, see
 `bridge/src/dev/devServer.ts`) that injects chat events and forwards
-`{event: "ui_debug", action: "open"|"tab"|"set"|"click"|"close", tab?, id?, value?}` to the window,
+`{event: "ui_debug", action: "open"|"tab"|"set"|"click"|"close", tab?, widget?, value?}` to the window,
 which answers `{event: "ui_debug_result", action, ok, error?}`. The extension ignores it unless
 `devMode = true` is set in its preferences (`__pref.lua`); synthetic input can't drive Aseprite's
 UI on every platform, so this is how screenshots and end-to-end tests are automated.

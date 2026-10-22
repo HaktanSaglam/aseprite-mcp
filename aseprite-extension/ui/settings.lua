@@ -39,8 +39,10 @@ return function(C)
 
     toolSelectionOnly = { kind = "bool", default = false },
     toolAllFrames = { kind = "bool", default = false },
+    toolChoice = { kind = "enum", list = C.TOOL_CHOICES, default = "remove_background" },
     toolTolerance = { kind = "int", min = 0, max = 100, default = 10 },
     toolOutlinePlacement = { kind = "enum", list = C.OUTLINE_PLACEMENTS, default = "outside" },
+    toolOutlineMode = { kind = "enum", list = C.OUTLINE_COLORS, default = "auto" },
     toolOutlineColor = { kind = "color", default = "000000ff" },
     toolColors = { kind = "int", min = 2, max = 64, default = 16 },
     toolDither = { kind = "enum", list = C.DITHERS, default = "none" },

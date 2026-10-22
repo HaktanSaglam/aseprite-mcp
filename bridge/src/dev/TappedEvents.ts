@@ -2,6 +2,14 @@ import type { AsepriteEvent, IAsepriteEvents } from "../aseprite/AsepriteSocket.
 
 type Listener = (event: AsepriteEvent) => void;
 
+function subscribe(list: Listener[], listener: Listener): () => void {
+  list.push(listener);
+  return () => {
+    const i = list.indexOf(listener);
+    if (i >= 0) list.splice(i, 1);
+  };
+}
+
 /**
  * Decorator over the real Aseprite event channel for development: tests and eval
  * scripts can inject events as if the Aseprite window had sent them, and watch what
@@ -10,6 +18,7 @@ type Listener = (event: AsepriteEvent) => void;
 export class TappedEvents implements IAsepriteEvents {
   private readonly handlers: Listener[] = [];
   private readonly outgoing: Listener[] = [];
+  private readonly incoming: Listener[] = [];
 
   constructor(private readonly inner: IAsepriteEvents) {
     inner.onEvent((event) => this.dispatch(event));
@@ -35,14 +44,16 @@ export class TappedEvents implements IAsepriteEvents {
 
   /** Observe bridge → Aseprite events; returns an unsubscribe function. */
   watch(listener: Listener): () => void {
-    this.outgoing.push(listener);
-    return () => {
-      const i = this.outgoing.indexOf(listener);
-      if (i >= 0) this.outgoing.splice(i, 1);
-    };
+    return subscribe(this.outgoing, listener);
+  }
+
+  /** Observe Aseprite → bridge events (e.g. ui_debug_result); returns an unsubscribe function. */
+  watchIncoming(listener: Listener): () => void {
+    return subscribe(this.incoming, listener);
   }
 
   private dispatch(event: AsepriteEvent): void {
     for (const handler of this.handlers) handler(event);
+    for (const listener of [...this.incoming]) listener(event);
   }
 }

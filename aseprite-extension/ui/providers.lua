@@ -16,7 +16,7 @@ return function(C)
     for i, m in ipairs(p.models) do models[i] = { id = m.id, label = m.label } end
     for i, e in ipairs(p.efforts) do efforts[i] = e end
     return {
-      id = p.id, label = p.label, models = models, efforts = efforts,
+      id = p.id, label = p.label, models = models, efforts = efforts, defaultModel = p.defaultModel,
       available = p.available, note = p.note, supportsImages = p.supportsImages,
     }
   end
@@ -45,6 +45,7 @@ return function(C)
       label = str(raw.label) or id,
       models = models,
       efforts = efforts,
+      defaultModel = str(raw.defaultModel),
       available = raw.available ~= false,
       note = str(raw.note),
       supportsImages = raw.supportsImages ~= false,
@@ -108,18 +109,33 @@ return function(C)
     return efforts[math.ceil(#efforts / 2)]
   end
 
+  local function hasModel(provider, id)
+    if id == nil then return false end
+    for _, m in ipairs(provider.models) do
+      if m.id == id then return true end
+    end
+    return false
+  end
+
+  -- The user's saved model while this provider still offers it, else the provider's
+  -- own default: the list is ordered newest first, and the newest model is often the
+  -- slowest and most expensive one.
+  local function pickModel(provider, wanted)
+    if #provider.models == 0 then return nil end
+    if hasModel(provider, wanted) then return wanted end
+    if hasModel(provider, provider.defaultModel) then return provider.defaultModel end
+    return provider.models[1].id
+  end
+
   -- sel = {provider?, model?, effort?} as stored in prefs; returns valid ids for them.
   function P.resolve(state, sel)
     sel = sel or {}
     local provider = P.find(state, sel.provider) or P.find(state, state.defaultId) or firstAvailable(state)
-    local model = nil
-    if #provider.models > 0 then
-      model = provider.models[1].id
-      for _, m in ipairs(provider.models) do
-        if m.id == sel.model then model = m.id end
-      end
-    end
-    return { provider = provider, model = model, effort = pickEffort(provider.efforts, sel.effort) }
+    return {
+      provider = provider,
+      model = pickModel(provider, sel.model),
+      effort = pickEffort(provider.efforts, sel.effort),
+    }
   end
 
   function P.providerOptions(state)

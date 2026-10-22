@@ -27,7 +27,7 @@ return function(ctx)
   local Form = load("ui/form.lua")(C, S)
   local LogView = load("ui/log_view.lua")(textRender, LL)
   local Header = load("ui/header_view.lua")(textRender, W)
-  local Panels = load("ui/panels.lua")(textRender, W, T, F, Header)
+  local Panels = load("ui/panels.lua")(T, F, Header)
 
   local TABS = {
     { id = "chat", text = "Chat", build = load("ui/tabs/chat_tab.lua") },
@@ -39,6 +39,14 @@ return function(ctx)
 
   -- Spinner speed; also how often "Working 12s" is refreshed.
   local TICK_SECONDS = 0.15
+
+  -- Default chat log height. The window must fit a 13" laptop at 200% UI scale (about
+  -- 440 px tall in all): header + log + tab bar + the tallest tab page stay under 400.
+  -- The log is vexpand, so making the window taller grows the log.
+  local LOG_HEIGHT = 130
+
+  -- Native labels don't wrap or clip nicely; long provider notes go to the chat log.
+  local PROVIDER_INFO_CHARS = 52
 
   -- Buttons that start an AI run; disabled while one is running.
   local RUN_BUTTONS = {
@@ -93,6 +101,12 @@ return function(ctx)
       sel.provider.label,
       sel.model and P.modelLabel(sel.provider, sel.model) or nil,
       sel.effort and C.effortLabel(sel.effort) or nil)
+  end
+
+  -- One line under the provider box: ready, not set up, or still the built-in list.
+  local function providerInfo()
+    local line = Panels.providerLines(resolvedAI().provider, providers.fromBridge)[1]
+    return F.truncate(textRender.forWidget(line and line.text or ""), PROVIDER_INFO_CHARS)
   end
 
   -- Active sprite ----------------------------------------------------------------
@@ -216,6 +230,7 @@ return function(ctx)
     local hasEfforts = #sel.provider.efforts > 0
     form:enable("settingsEffort", hasEfforts)
     form:enable("chatEffort", hasEfforts)
+    form:setText("providerInfo", providerInfo())
     if not ok then scheduleRebuild() end
     repaint()
   end
@@ -295,10 +310,8 @@ return function(ctx)
     logView:wheel(ev)
     repaint()
   end
-  handlers.paintProviderInfo = function(ev)
-    Panels.paintLines(ev.context, Panels.providerLines(resolvedAI().provider, providers.fromBridge))
-  end
-  handlers.paintHelp = function(ev) Panels.paintLines(ev.context, Panels.helpLines()) end
+  handlers.providerInfo = providerInfo
+  handlers.helpLines = function() return Panels.HELP end
 
   handlers.providerOptions = function() return P.providerOptions(providers) end
   handlers.modelOptions = function() return P.modelOptions(resolvedAI().provider) end
@@ -363,6 +376,18 @@ return function(ctx)
       session:toolSent(requestId, R.TOOLS[key].label)
     end
     sync()
+  end
+
+  handlers.applyTool = function()
+    form:pull()
+    handlers.tool(R.applyKey(S.snapshot(prefs)))
+  end
+
+  -- Shows the settings of the picked tool (and the outline color only when it's used).
+  handlers.toolChanged = function()
+    form:pull()
+    form:applyVisibility(S.snapshot(prefs))
+    repaint()
   end
 
   handlers.resetAdjust = function()
@@ -488,6 +513,10 @@ return function(ctx)
       w, h = math.max(w, hint.width), math.max(h, hint.height)
       local mw, mh = app.window.width, app.window.height
       if x + w < 40 or x > mw - 40 or y < 0 or y > mh - 40 then return nil end
+      -- A height saved by an older, taller layout (or on a bigger screen) must not push
+      -- the bottom rows off the main window: shrink it, then move up if still needed.
+      h = math.min(h, math.max(hint.height, mh - y))
+      if y + h > mh then y = math.max(0, mh - h) end
       return Rectangle(x, y, w, h)
     end)
     return ok and rect or nil
@@ -535,7 +564,7 @@ return function(ctx)
     form:canvas{ id = "header", height = Header.HEIGHT, hexpand = true, vexpand = false, onpaint = paintHeader }
     form:newrow()
     form:canvas{
-      id = "log", width = 340, height = 190, hexpand = true, vexpand = true,
+      id = "log", width = 340, height = LOG_HEIGHT, hexpand = true, vexpand = true,
       onpaint = handlers.paintLog, onwheel = handlers.wheelLog,
     }
     form:newrow()
@@ -549,6 +578,8 @@ return function(ctx)
       -- The log (vexpand) takes any extra height when the user makes the window taller.
       d:endtabs{ id = "tabs", selected = "tab_" .. selectedTab, onchange = form:safe(onTabChange) }
     end
+    -- Before show, so the first size already leaves out the other tools' settings.
+    form:applyVisibility(S.snapshot(prefs))
     return d
   end
 

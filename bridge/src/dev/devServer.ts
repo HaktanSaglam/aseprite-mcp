@@ -63,6 +63,24 @@ function runChat(events: TappedEvents, payload: AsepriteEvent): Promise<Aseprite
  * Synthetic mouse/keyboard input can't drive Aseprite's UI, so this is how the chat
  * flow and the window are exercised end to end.
  */
+/** Forwards a ui_debug event and waits briefly for the window's ui_debug_result. */
+function runUiDebug(events: TappedEvents, body: AsepriteEvent): Promise<AsepriteEvent> {
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = (result: AsepriteEvent) => {
+      if (done) return;
+      done = true;
+      stop();
+      resolve(result);
+    };
+    const stop = events.watchIncoming((event) => {
+      if (event.event === "ui_debug_result") finish(event);
+    });
+    events.notify({ ...body, event: "ui_debug" });
+    setTimeout(() => finish({ event: "ui_debug_result", ok: false, error: "No answer (is devMode on in the extension?)" }), 3000);
+  });
+}
+
 export function startDevServer(options: Options, events: TappedEvents): Promise<Server> {
   const allowedHosts = new Set([`127.0.0.1:${options.port}`, `localhost:${options.port}`]);
   const http = createServer(async (req, res) => {
@@ -77,8 +95,7 @@ export function startDevServer(options: Options, events: TappedEvents): Promise<
           events.inject(body);
           return send(res, 200, { ok: true });
         case "/ui":
-          events.notify({ ...body, event: "ui_debug" });
-          return send(res, 200, { ok: true });
+          return send(res, 200, await runUiDebug(events, body));
         default:
           return send(res, 404, { error: "Not found" });
       }

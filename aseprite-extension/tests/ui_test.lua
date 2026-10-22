@@ -78,7 +78,7 @@ end)
 
 test("catalog labels stay ASCII so native widgets never need fallback glyphs", function()
   local lists = { C.SIZES, C.STYLES, C.PALETTES, C.VIEWS, C.TARGETS, C.VARIATIONS,
-    C.ANIMATIONS, C.EFFORTS, C.DITHERS, C.OUTLINE_PLACEMENTS }
+    C.ANIMATIONS, C.EFFORTS, C.DITHERS, C.OUTLINE_PLACEMENTS, C.OUTLINE_COLORS, C.TOOL_CHOICES }
   for _, list in ipairs(lists) do
     for _, item in ipairs(list) do
       truthy(not item.label:find("[\128-\255]"), "ASCII label " .. item.label)
@@ -126,6 +126,9 @@ test("settings snapshot covers every key", function()
   eq(s.toolPalette, "pico8")
   eq(s.port, 7801)
   eq(s.ui_x, nil)
+  eq(s.toolChoice, "remove_background")
+  eq(s.toolOutlineMode, "auto")
+  eq(s.effort, "medium", "Balanced until the user picks another effort")
 end)
 
 -- providers -----------------------------------------------------------------------------
@@ -155,10 +158,36 @@ test("providers fall back to the built-in Claude list", function()
   eq(state.fromBridge, false)
   local sel = P.resolve(state, {})
   eq(sel.provider.id, "claude-code")
-  eq(sel.model, "fable", "first built-in model")
+  eq(sel.model, "opus", "the built-in default, not the newest (and slowest) model")
   eq(sel.effort, "medium")
   local labels = C.labels(P.modelOptions(sel.provider))
   eq(table.concat(labels, ","), "Fable,Opus,Sonnet,Haiku")
+  eq(P.resolve(state, { model = "fable" }).model, "fable", "a saved choice wins")
+end)
+
+test("providers pick the bridge's defaultModel unless the user saved a choice", function()
+  local state = P.new()
+  P.update(state, wire({
+    event = "bridge_info", version = "2", defaultProvider = "claude-code",
+    providers = {
+      {
+        id = "claude-code", label = "Claude Code", defaultModel = "opus",
+        models = { { id = "fable", label = "Fable (newest)" }, { id = "opus", label = "Opus" }, { id = "haiku", label = "Haiku" } },
+        efforts = { "low", "medium", "high" }, available = true, supportsImages = true,
+      },
+      { id = "codex", label = "Codex", models = { { id = "gpt-5", label = "GPT-5" } }, efforts = {}, available = true },
+      {
+        id = "ollama", label = "Ollama", defaultModel = "gone",
+        models = { { id = "qwen3", label = "qwen3" }, { id = "llama", label = "llama" } }, efforts = {}, available = true,
+      },
+    },
+  }))
+  eq(P.resolve(state, {}).model, "opus", "no saved choice -> defaultModel")
+  eq(P.resolve(state, { model = "haiku" }).model, "haiku", "saved choice still offered -> kept")
+  eq(P.resolve(state, { model = "sonnet" }).model, "opus", "saved choice gone -> defaultModel")
+  eq(P.resolve(state, { provider = "codex" }).model, "gpt-5", "no defaultModel -> first model")
+  eq(P.resolve(state, { provider = "ollama" }).model, "qwen3", "defaultModel not in the list -> first model")
+  eq(P.resolve(state, { provider = "ollama", model = "llama" }).model, "llama")
 end)
 
 test("providers update from bridge_info userdata", function()
@@ -399,6 +428,19 @@ test("tool validation errors", function()
   local _, e5 = R.tool("flip_h", "1", settings(), group)
   truthy(e5:find('"Body" is a group'), e5)
   truthy(R.tool("undo", "1", settings(), group), "undo works on any layer")
+end)
+
+test("the Tools tab's Apply runs the picked tool", function()
+  eq(R.applyKey(settings()), "remove_background", "default choice")
+  eq(R.applyKey(settings({ toolChoice = "outline" })), "outline_auto")
+  eq(R.applyKey(settings({ toolChoice = "outline", toolOutlineMode = "color" })), "outline_color")
+  -- Every picker entry must reach a real tool, whatever the outline mode.
+  for _, choice in ipairs(C.TOOL_CHOICES) do
+    for _, mode in ipairs(C.OUTLINE_COLORS) do
+      local key = R.applyKey(settings({ toolChoice = choice.id, toolOutlineMode = mode.id }))
+      truthy(R.TOOLS[key], choice.id .. "/" .. mode.id .. " -> " .. tostring(key))
+    end
+  end
 end)
 
 test("every tool key builds a payload that encodes as an object", function()
@@ -708,7 +750,7 @@ end)
 -- panels ----------------------------------------------------------------------------------------------
 
 local Header = load("ui/header_view.lua")(textRender, W)
-local Panels = load("ui/panels.lua")(textRender, W, T, F, Header)
+local Panels = load("ui/panels.lua")(T, F, Header)
 
 test("header model: working, offline, result, hints", function()
   local s, clock = newSession()
@@ -737,7 +779,16 @@ test("provider lines explain availability", function()
   eq(Panels.providerLines({ available = true, supportsImages = true }, false)[1].role, "dim")
   eq(Panels.providerLines({ available = true, supportsImages = true }, true)[1].text, "Ready")
   truthy(Panels.providerLines({ available = true, supportsImages = false }, true)[1].text:find("can't see"), "image note")
-  eq(#Panels.helpLines(), #Panels.HELP)
+end)
+
+test("help fits in three short native label lines", function()
+  truthy(#Panels.HELP >= 2 and #Panels.HELP <= 3, "2-3 lines")
+  for _, line in ipairs(Panels.HELP) do
+    -- Native labels don't wrap, and the pixel font has no glyphs from U+2000 up.
+    truthy(#line <= 45, "short enough: " .. line)
+    truthy(not line:find("[\128-\255]"), "ASCII: " .. line)
+  end
+  truthy(Panels.HELP[1]:find("npm start"), "says how to start the bridge")
 end)
 
 -- debug hook --------------------------------------------------------------------------------------
