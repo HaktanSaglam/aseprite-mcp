@@ -243,16 +243,23 @@ describe("guide inlining and reply language", () => {
   it("inlines the topic in generation prompts and names the reply language", () => {
     const prompt = generatePrompt({ text: "şövalye", options: {}, info: undefined });
     expect(prompt).toContain('pixel-art guide, "characters"');
-    expect(prompt).toContain('Reply language: the language this request is written in: "şövalye"');
+    expect(prompt).toContain("Reply language: Turkish");
   });
 });
 
 describe("replyLanguage", () => {
-  it("defaults short ASCII requests to English and quotes the rest", async () => {
+  it("names the detected language", async () => {
     const { replyLanguage } = await import("../src/chat/promptBuilder.js");
-    expect(replyLanguage("iron sword")).toMatch(/English/);
-    expect(replyLanguage("kırmızı iksir")).toContain('"kırmızı iksir"');
-    expect(replyLanguage("a cute green slime with big eyes")).toContain("written in");
+    const { detectLanguage } = await import("../src/chat/language.js");
+    expect(replyLanguage("iron sword")).toContain("Reply language: English");
     expect(replyLanguage("")).toMatch(/earlier, else English/);
+    expect(detectLanguage("kırmızı iksir")).toBe("Turkish");
+    expect(detectLanguage("bu yeşil topu sevimli bir slime yap")).toBe("Turkish");
+    expect(detectLanguage("şövalye")).toBe("Turkish");
+    expect(detectLanguage("add a small red wizard hat on top")).toBe("English");
+    expect(detectLanguage("ein Ritter mit einem Schwert und der Schild")).toBe("German");
+    expect(detectLanguage("un caballero con una espada")).toBe("Spanish");
+    expect(detectLanguage("рыцарь с мечом")).toBe("Russian");
+    expect(detectLanguage("剣を持った騎士")).toBe("Japanese");
   });
 });

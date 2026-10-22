@@ -7,6 +7,7 @@ import {
   type View,
 } from "./chatSchema.js";
 import { guideReference, guideTopicFor } from "./guideSelector.js";
+import { detectLanguage } from "./language.js";
 import { detailForSize, PALETTE_LABELS, STYLE_SPECS, type StyleSpec } from "./styleSpecs.js";
 
 /**
@@ -181,18 +182,12 @@ The subject should fill most of the canvas, with a 1-2 px margin.
 const GUIDE_HINT =
   'If you are unsure how to draw this subject, call pixel_art_guide once before drawing (e.g. {"topic":"characters"}, "items_icons", "environments" or "tiles").';
 
-/**
- * Models answer in whatever language dominates the prompt, which is ours, not the user's.
- * Two or three ASCII words ("iron sword") don't reveal a language, and asked to guess,
- * models have answered in German or Russian; those get English.
- */
+/** Models answer in whatever language dominates the prompt, which is ours, not the user's. */
 export function replyLanguage(text: string): string {
-  const quoted = text.trim().replace(/\s+/g, " ").slice(0, 80);
-  if (!quoted) return "Reply language: the language the user wrote in earlier, else English.";
-  const words = quoted.split(" ").length;
-  const nonAscii = /[^\x00-\x7f]/.test(quoted);
-  if (words < 4 && !nonAscii) return "Reply language: English (unless the user wrote to you in another language earlier).";
-  return `Reply language: the language this request is written in: "${quoted}".`;
+  const language = detectLanguage(text);
+  return language
+    ? `Reply language: ${language} (the language of the user's request).`
+    : "Reply language: the language the user wrote in earlier, else English.";
 }
 
 /** Everything a generation prompt shares after its first line. */
