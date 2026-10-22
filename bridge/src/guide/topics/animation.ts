@@ -32,6 +32,9 @@ export const animation: GuideTopic = {
 - Keep the ground contact fixed: feet do not slide during idle; the lowest row stays planted.
 - Move less: a 1px bob reads clearly at 32x32. Sub-pixel motion: shift a highlight or swap
   a few shading pixels instead of moving the whole outline.
+- But make it visible: an idle where only a 1px detail moves looks like a still image. Combine
+  the 1px body bob (or squash) with one secondary motion: a blink, an ear/hair/cape sway, a
+  highlight that slides, or a squash that widens the base by 1-2 px.
 - Loops: the last frame must flow into the first (t = i/n never reaches 1, so
   Math.sin(2 * Math.PI * t) loops seamlessly).
 
