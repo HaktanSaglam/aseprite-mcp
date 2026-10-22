@@ -120,9 +120,9 @@ export function createProviderRegistry(config: BridgeConfig, deps: Dependencies 
       case "claude-code":
         return cached(id, s.claude, () => new ClaudeCliRunner({ claudePath: s.claude.path, workDir: config.claudeWorkDir }));
       case "codex":
-        return cached(id, s.codex.path, () => new CodexCliRunner({ codexPath: s.codex.path, workDir: join(workRoot, "aseprite-mcp-codex") }));
+        return cached(id, s.codex.path, () => new CodexCliRunner({ codexPath: s.codex.path, workDir: join(workRoot, "codex") }));
       case "gemini-cli":
-        return cached(id, s.gemini.path, () => new GeminiCliRunner({ geminiPath: s.gemini.path, workDir: join(workRoot, "aseprite-mcp-gemini") }));
+        return cached(id, s.gemini.path, () => new GeminiCliRunner({ geminiPath: s.gemini.path, workDir: join(workRoot, "gemini") }));
       case "openai": {
         const o = openAiSettings(s);
         return cached(id, o, () => new OpenAiCompatibleRunner(o, deps.agentOptions));

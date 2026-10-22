@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { homedir } from "node:os";
 import { join } from "node:path";
 
 export interface BridgeConfig {
@@ -44,7 +44,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BridgeConfig {
     asepritePort: intFromEnv(env.ASEPRITE_WS_PORT, 7801),
     requestTimeoutMs: intFromEnv(env.ASEPRITE_REQUEST_TIMEOUT_MS, 30_000),
     claudePath: env.CLAUDE_PATH ?? "claude",
-    claudeWorkDir: env.ASEPRITE_CLAUDE_WORKDIR ?? join(tmpdir(), "aseprite-mcp-claude"),
+    // Under the user's home rather than /tmp: on Linux /tmp is shared, and another user
+    // could prepare a folder the CLIs then trust.
+    claudeWorkDir: env.ASEPRITE_CLAUDE_WORKDIR ?? join(homedir(), ".aseprite-mcp", "work", "claude"),
     configFile: env.ASEPRITE_MCP_CONFIG ?? join(homedir(), ".aseprite-mcp", "config.json"),
     // Each run is a model process of its own; dozens at once only hit rate limits and memory.
     maxParallelRuns: Math.min(8, Math.max(1, intFromEnv(env.ASEPRITE_MAX_PARALLEL, 4))),
