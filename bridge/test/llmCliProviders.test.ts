@@ -235,7 +235,8 @@ describe("GeminiCliRunner (fake CLI)", () => {
     const [log] = logEntries();
     expect(log.trust).toBe("true");
     expect(log.settings.mcpServers.aseprite.httpUrl).toBe(MCP_URL);
-    expect(log.args[0]).toMatch(/^--prompt=<instructions>\nSERVER INSTRUCTIONS/);
+    // One line on Windows (cmd.exe ends the command line at a newline), as sent elsewhere.
+    expect(log.args[0]).toMatch(/^--prompt=<instructions>\s+SERVER INSTRUCTIONS/);
     expect(log.args).toEqual(expect.arrayContaining(["--model", "flash"]));
     // The per-run settings file is removed afterwards.
     expect(readdirSync(join(workDir, ".runs"))).toEqual([]);
@@ -254,5 +255,13 @@ describe("GeminiCliRunner (fake CLI)", () => {
     const events = await collect(runner(join(workDir, "nope-gemini")).run(request()));
     expect(last(events)).toMatchObject({ ok: false, error: expect.stringContaining("npm install -g @google/gemini-cli") });
     expect(existsSync(join(workDir, ".runs"))).toBe(true);
+  });
+});
+
+describe("singleLineOnWindows", () => {
+  it("joins lines only on Windows", async () => {
+    const { singleLineOnWindows } = await import("../src/llm/cli/argv.js");
+    expect(singleLineOnWindows("a\n\n  b\r\nc", "win32")).toBe("a b c");
+    expect(singleLineOnWindows("a\nb", "darwin")).toBe("a\nb");
   });
 });
