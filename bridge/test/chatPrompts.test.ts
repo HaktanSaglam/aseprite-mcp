@@ -243,6 +243,16 @@ describe("guide inlining and reply language", () => {
   it("inlines the topic in generation prompts and names the reply language", () => {
     const prompt = generatePrompt({ text: "şövalye", options: {}, info: undefined });
     expect(prompt).toContain('pixel-art guide, "characters"');
-    expect(prompt).toContain('Reply language: the language of the user\'s request ("şövalye")');
+    expect(prompt).toContain('Reply language: the language this request is written in: "şövalye"');
+  });
+});
+
+describe("replyLanguage", () => {
+  it("defaults short ASCII requests to English and quotes the rest", async () => {
+    const { replyLanguage } = await import("../src/chat/promptBuilder.js");
+    expect(replyLanguage("iron sword")).toMatch(/English/);
+    expect(replyLanguage("kırmızı iksir")).toContain('"kırmızı iksir"');
+    expect(replyLanguage("a cute green slime with big eyes")).toContain("written in");
+    expect(replyLanguage("")).toMatch(/earlier, else English/);
   });
 });

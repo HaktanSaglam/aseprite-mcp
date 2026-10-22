@@ -61,13 +61,16 @@ export async function executeRun(
       signal,
     });
     let finished = false;
+    let lastText: string | undefined;
     for await (const event of events) {
       switch (event.type) {
         case "session":
           outcome.sessionId = event.sessionId;
           break;
         case "text":
-          sink({ kind: "text", text: prefix + event.text });
+          // Parallel jobs narrate their steps all at once; only each job's final words are shown.
+          if (presentation.quietTools) lastText = event.text;
+          else sink({ kind: "text", text: prefix + event.text });
           break;
         case "tool":
           if (!presentation.quietTools) sink({ kind: "tool", name: event.name });
@@ -84,6 +87,7 @@ export async function executeRun(
           break;
       }
     }
+    if (lastText && outcome.ok) sink({ kind: "text", text: prefix + lastText });
     if (!finished && !outcome.ok) outcome.error ??= "The model run ended without a result.";
   } catch (error) {
     outcome.ok = false;
