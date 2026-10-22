@@ -241,6 +241,30 @@ return function(U)
     img:saveAs(path)
   end
 
+  -- GIFs go through a flattened copy: with one layer and no tags Aseprite saves without
+  -- its modal "this format doesn't support layers/tags" questions, which would block
+  -- every bridge request until someone clicks them away. saveAs (not saveCopyAs) marks
+  -- the copy as saved, so closing it doesn't ask about unsaved changes either.
+  local function saveAnimation(sprite, first, last, scale, path)
+    local factor = math.max(1, math.floor(scale))
+    local w, h = sprite.width * factor, sprite.height * factor
+    local tmp = Sprite(w, h, ColorMode.RGB)
+    local ok, err = pcall(function()
+      for f = first, last do
+        local n = f - first + 1
+        if n > 1 then tmp:newEmptyFrame(n) end
+        local img = Image(sprite.width, sprite.height, ColorMode.RGB)
+        img:drawSprite(sprite, f)
+        if factor > 1 then img:resize{ width = w, height = h, method = "nearest" } end
+        tmp:newCel(tmp.layers[1], n, img, Point(0, 0))
+        tmp.frames[n].duration = sprite.frames[f].duration
+      end
+      tmp:saveAs(path)
+    end)
+    tmp:close()
+    if not ok then error(err, 0) end
+  end
+
   function M.export_sprite(p)
     local sprite = U.sprite(p)
     local path = p.path
@@ -276,11 +300,16 @@ return function(U)
           saveFrame(sprite, frame, scale, M.sequenceName(stem, ext, frame, #sprite.frames))
         end
       else
-        local args = { ui = false, filename = path, scale = scale }
-        if p.tag then args.tag = p.tag end
-        app.command.SaveFileCopyAs(args)
+        local first, last = 1, #sprite.frames
+        if p.tag then
+          local tag = findTag(sprite, p.tag)
+          first, last = tag.fromFrame.frameNumber, tag.toFrame.frameNumber
+        end
+        saveAnimation(sprite, first, last, scale, path)
       end
     end)
+    -- saveAnimation opened and closed a temporary tab; give the user theirs back.
+    pcall(function() app.sprite = sprite end)
     return { ok = true, path = path }
   end
 

@@ -454,6 +454,23 @@ test("partial group paths find the nested layer instead of creating it again", f
   expectError(function() call("layer_op", { op = "update", name = "Hero/Body/Outline", newName = "A/B" }) end, "can't contain")
 end)
 
+test("export gif keeps frames, durations and scale, and leaves no extra tab", function()
+  local info = call("create_sprite", { width = 2, height = 2, frames = 3 })
+  call("layer_op", { op = "add", name = "Top" })
+  call("tag_op", { op = "add", name = "loop", from = 1, to = 3 })
+  call("frame_op", { op = "duration", durationMs = 120 })
+  local before = #app.sprites
+  local gif = app.fs.joinPath(app.fs.tempPath, "amcp_anim.gif")
+  call("export_sprite", { path = gif, kind = "gif", scale = 2 })
+  eq(#app.sprites, before, "temporary sprite closed")
+  eq(app.sprite.id, info.id, "user's sprite active again")
+  local back = Sprite{ fromFile = gif }
+  eq(#back.frames, 3, "frames")
+  eq(back.width, 4, "scaled")
+  eq(math.floor(back.frames[2].duration * 1000 + 0.5), 120, "duration")
+  back:close()
+end)
+
 print(string.format("%d passed, %d failed", passed, failed))
 -- os.exit is disabled in Aseprite's Lua; a raised error makes the run fail instead.
 if failed > 0 then error(failed .. " test(s) failed") end
