@@ -1,4 +1,5 @@
 import type { Effort, LlmEvent } from "./LlmRunner.js";
+import { singleLineOnWindows } from "./cli/argv.js";
 
 export const CODEX_MCP_SERVER = "aseprite";
 
@@ -81,7 +82,8 @@ function toml(value: string): string {
 
 /** clap would read a prompt that starts with "-" as a flag; a leading space is harmless. */
 function positional(text: string): string {
-  return text.startsWith("-") ? ` ${text}` : text;
+  const line = singleLineOnWindows(text);
+  return line.startsWith("-") ? ` ${line}` : line;
 }
 
 export interface CodexArgsInput {

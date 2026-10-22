@@ -182,8 +182,9 @@ describe("ClaudeCliRunner (fake CLI)", () => {
     expect(start.args).toEqual(expect.arrayContaining(["-p", "--input-format", "stream-json", "--output-format", "stream-json"]));
     expect(start.args[start.args.indexOf("--model") + 1]).toBe("opus");
     expect(start.args[start.args.indexOf("--effort") + 1]).toBe("high");
-    expect(start.args[start.args.indexOf("--append-system-prompt") + 1]).toBe("SYSTEM");
-    expect(JSON.parse(start.args[start.args.indexOf("--mcp-config") + 1])).toEqual({
+    // Passed as files: cmd.exe (Windows .cmd shims) can't carry newlines or JSON quoting.
+    expect(readFileSync(start.args[start.args.indexOf("--append-system-prompt-file") + 1], "utf8")).toBe("SYSTEM");
+    expect(JSON.parse(readFileSync(start.args[start.args.indexOf("--mcp-config") + 1], "utf8"))).toEqual({
       mcpServers: { aseprite: { type: "http", url: MCP_URL } },
     });
     expect(start.args).not.toContain("--resume");

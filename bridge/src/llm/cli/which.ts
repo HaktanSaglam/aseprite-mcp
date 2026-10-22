@@ -38,8 +38,11 @@ export function which(command: string, env: NodeJS.ProcessEnv = process.env): st
   if (isAbsolute(command) || command.includes("/") || command.includes("\\")) {
     return isExecutable(command) ? command : undefined;
   }
-  const extensions =
-    process.platform === "win32" ? ["", ...(env.PATHEXT ?? ".EXE;.CMD;.BAT").split(";")] : [""];
+  // npm puts an extensionless sh script next to claude.cmd on Windows; only the .cmd/.exe
+  // can be started, so PATHEXT extensions come first and the bare name only if it has one.
+  const pathExt = (env.PATHEXT ?? ".EXE;.CMD;.BAT").split(";").filter(Boolean);
+  const hasExt = pathExt.some((ext) => command.toLowerCase().endsWith(ext.toLowerCase()));
+  const extensions = process.platform === "win32" ? (hasExt ? [""] : pathExt) : [""];
   const dirs = [...(env.PATH ?? "").split(delimiter).filter(Boolean), ...fallbackDirs()];
   for (const dir of dirs) {
     for (const ext of extensions) {

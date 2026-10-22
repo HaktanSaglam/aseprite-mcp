@@ -47,6 +47,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.0",
+    "cross-spawn": "^7.0.6",
     "pngjs": "^7.0.0",
     "quickjs-emscripten": "^0.32.0",
     "ws": "^8.22.0",

@@ -1,14 +1,20 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { nodePathProbe, resolveOutputPath, type PathProbe } from "../src/canvas/pathPolicy.js";
 
+/** POSIX-style test paths as the platform resolves them ("/art" → "D:\\art" on Windows). */
+const abs = (path: string) => resolve(path);
+const escapeRegex = (text: string) => text.replace(/[\\^$.*+?()[\]{}|/]/g, "\\$&");
+
 /** A tiny fake file system: a set of folders and a set of files. */
 function probe(dirs: string[], files: string[] = [], home = "/home/me"): PathProbe {
+  const d = dirs.map(abs);
+  const f = files.map(abs);
   return {
-    homeDir: () => home,
-    kind: (path) => (dirs.includes(path) ? "dir" : files.includes(path) ? "file" : null),
+    homeDir: () => abs(home),
+    kind: (path) => (d.includes(path) ? "dir" : f.includes(path) ? "file" : null),
   };
 }
 
@@ -17,11 +23,11 @@ const fs = probe(["/art", "/home/me", "/home/me/Desktop"], ["/art/hero.png", "/a
 
 describe("resolveOutputPath", () => {
   it("accepts an absolute path in an existing folder", () => {
-    expect(resolveOutputPath("/art/new.png", PNG, fs)).toBe("/art/new.png");
+    expect(resolveOutputPath("/art/new.png", PNG, fs)).toBe(abs("/art/new.png"));
   });
 
   it("expands a leading ~ to the home folder", () => {
-    expect(resolveOutputPath("~/Desktop/a.png", PNG, fs)).toBe("/home/me/Desktop/a.png");
+    expect(resolveOutputPath("~/Desktop/a.png", PNG, fs)).toBe(abs("/home/me/Desktop/a.png"));
   });
 
   it("rejects other ~user forms", () => {
@@ -29,7 +35,7 @@ describe("resolveOutputPath", () => {
   });
 
   it("trims whitespace and normalizes .. segments", () => {
-    expect(resolveOutputPath("  /art/sub/../new.png ", PNG, fs)).toBe("/art/new.png");
+    expect(resolveOutputPath("  /art/sub/../new.png ", PNG, fs)).toBe(abs("/art/new.png"));
   });
 
   it("rejects relative paths with an example of a valid one", () => {
@@ -43,21 +49,21 @@ describe("resolveOutputPath", () => {
   it("rejects extensions outside the allowed list, case-insensitively accepting the rest", () => {
     expect(() => resolveOutputPath("/art/a.jpg", PNG, fs)).toThrow(/must end with \.png.*\.jpg/);
     expect(() => resolveOutputPath("/art/a", PNG, fs)).toThrow(/no extension/);
-    expect(resolveOutputPath("/art/A.PNG", PNG, fs)).toBe("/art/A.PNG");
+    expect(resolveOutputPath("/art/A.PNG", PNG, fs)).toBe(abs("/art/A.PNG"));
   });
 
   it("requires the parent folder to exist", () => {
-    expect(() => resolveOutputPath("/missing/a.png", PNG, fs)).toThrow(/Folder "\/missing" does not exist/);
+    expect(() => resolveOutputPath("/missing/a.png", PNG, fs)).toThrow(new RegExp(`Folder "${escapeRegex(abs("/missing"))}" does not exist`));
   });
 
   it("refuses to overwrite an existing file unless asked", () => {
     expect(() => resolveOutputPath("/art/hero.png", PNG, fs)).toThrow(/already exists.*overwrite: true/);
-    expect(resolveOutputPath("/art/hero.png", { ...PNG, overwrite: true }, fs)).toBe("/art/hero.png");
+    expect(resolveOutputPath("/art/hero.png", { ...PNG, overwrite: true }, fs)).toBe(abs("/art/hero.png"));
   });
 
   it("allows writing over the document's own file", () => {
-    const rules = { extensions: [".aseprite"], currentFile: "/art/hero.aseprite" };
-    expect(resolveOutputPath("/art/hero.aseprite", rules, fs)).toBe("/art/hero.aseprite");
+    const rules = { extensions: [".aseprite"], currentFile: abs("/art/hero.aseprite") };
+    expect(resolveOutputPath("/art/hero.aseprite", rules, fs)).toBe(abs("/art/hero.aseprite"));
     expect(() => resolveOutputPath("/art/hero.aseprite", { extensions: [".aseprite"], currentFile: "Sprite-0001" }, fs)).toThrow(
       /already exists/,
     );

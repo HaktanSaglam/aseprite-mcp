@@ -1,4 +1,5 @@
 import type { LlmEvent, RunStats } from "./LlmRunner.js";
+import { singleLineOnWindows } from "./cli/argv.js";
 
 export const GEMINI_MCP_SERVER = "aseprite";
 
@@ -45,7 +46,7 @@ export interface GeminiArgsInput {
 export function geminiArgs(input: GeminiArgsInput): string[] {
   // `--prompt=` keeps a prompt that starts with "-" from being read as a flag.
   const args = [
-    `--prompt=${input.prompt}`,
+    `--prompt=${singleLineOnWindows(input.prompt)}`,
     "--output-format", "stream-json",
     "--approval-mode", "yolo",
     "--allowed-mcp-server-names", GEMINI_MCP_SERVER,

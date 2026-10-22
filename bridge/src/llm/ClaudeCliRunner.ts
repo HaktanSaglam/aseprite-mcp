@@ -1,4 +1,6 @@
-import { mkdirSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { CLAUDE_MCP_SERVER, claudeErrorMessage, claudeUserMessage, parseClaudeLine } from "./claudeStream.js";
 import { JsonLineProcess, type ProcessOutput } from "./cli/JsonLineProcess.js";
 import { which } from "./cli/which.js";
@@ -94,6 +96,17 @@ export class ClaudeCliRunner implements ILlmRunner {
     for (const sessionId of [...this.warmPool.keys()]) this.evict(sessionId);
   }
 
+  /**
+   * Writes per-run settings into the work dir. Named by content hash: parallel runs with
+   * the same content share one file and different contents never overwrite each other.
+   */
+  private runFile(kind: string, ext: string, content: string): string {
+    const hash = createHash("sha256").update(content).digest("hex").slice(0, 16);
+    const path = join(this.options.workDir, `${kind}-${hash}.${ext}`);
+    if (!existsSync(path)) writeFileSync(path, content);
+    return path;
+  }
+
   private spawn(request: LlmRunRequest, resumeId: string | undefined): LiveProcess {
     const mcpConfig = { mcpServers: { [CLAUDE_MCP_SERVER]: { type: "http", url: request.mcpUrl } } };
     const args = [
@@ -101,13 +114,15 @@ export class ClaudeCliRunner implements ILlmRunner {
       "--input-format", "stream-json",
       "--output-format", "stream-json",
       "--verbose",
-      "--mcp-config", JSON.stringify(mcpConfig),
+      // Files rather than inline strings: on Windows the CLI is a .cmd shim and cmd.exe
+      // can't pass newlines (the system prompt) or keep JSON quoting intact.
+      "--mcp-config", this.runFile("mcp", "json", JSON.stringify(mcpConfig)),
       "--strict-mcp-config",
       // No built-in tools (Bash, Edit, ...): the run may only touch Aseprite.
       "--tools", "",
       "--allowedTools", TOOL_PATTERN,
       "--setting-sources", "",
-      "--append-system-prompt", request.systemPrompt,
+      "--append-system-prompt-file", this.runFile("system", "txt", request.systemPrompt),
     ];
     if (request.model) args.push("--model", request.model);
     if (request.effort) args.push("--effort", request.effort);

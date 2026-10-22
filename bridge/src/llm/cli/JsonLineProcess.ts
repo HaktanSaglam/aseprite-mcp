@@ -1,4 +1,7 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
+// cross-spawn instead of child_process.spawn: on Windows the CLIs are npm .cmd shims,
+// which Node only starts through cmd.exe, and arguments then need cmd.exe escaping.
+import spawn from "cross-spawn";
 import { createInterface } from "node:readline";
 
 export type ProcessOutput =

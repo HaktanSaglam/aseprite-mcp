@@ -49,7 +49,7 @@ const instructions = async () => "SERVER INSTRUCTIONS";
 
 describe("which", () => {
   it("finds commands on PATH and checks explicit paths", () => {
-    expect(which("node")).toMatch(/node(\.exe)?$/);
+    expect(which("node")).toMatch(/node(\.exe)?$/i);
     expect(which(process.execPath)).toBe(process.execPath);
     expect(which("definitely-not-a-real-command-xyz")).toBeUndefined();
     expect(which("/nonexistent/bin/tool")).toBeUndefined();
