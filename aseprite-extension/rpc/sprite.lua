@@ -43,7 +43,9 @@ return function(U)
 
     local isActive = app.sprite == sprite
     local activeLayer = nil
-    if isActive and app.layer then activeLayer = app.layer.name end
+    -- The path, not the bare name: the model passes it back as `layer`, and a bare
+    -- "Shade" resolves to the first "Shade" in the stack, maybe in another group.
+    if isActive and app.layer then activeLayer = U.layerPath(app.layer) end
 
     return {
       id = sprite.id,
@@ -94,6 +96,9 @@ return function(U)
   function M.create_sprite(p)
     local mode = U.COLOR_MODES[p.colorMode or "rgb"]
     if not mode then error("Unknown color mode: " .. tostring(p.colorMode)) end
+    -- Validate everything before Sprite(): it opens a tab outside any transaction, so a
+    -- later error would leave an empty orphan tab behind on every retry.
+    local background = p.background ~= nil and U.hexToColor(p.background) or nil
     local sprite = Sprite(math.floor(p.width), math.floor(p.height), mode)
     -- Unsaved sprites all show "Sprite" as tab title; a name tells parallel results apart.
     if p.name and p.name ~= "" then sprite.filename = p.name end
@@ -102,12 +107,11 @@ return function(U)
       for i = 2, frames do sprite:newEmptyFrame(i) end
       -- Adding frames moves the playhead to the last one; a new sprite starts at frame 1.
       if frames > 1 and app.sprite == sprite then app.frame = sprite.frames[1] end
-      if p.background then
-        local color = U.hexToColor(p.background)
+      if background then
         local layer = sprite.layers[1]
         for i = 1, #sprite.frames do
           local img = U.blankImage(sprite, sprite.width, sprite.height)
-          img:clear(color)
+          img:clear(background)
           sprite:newCel(layer, i, img, Point(0, 0))
         end
       end

@@ -50,46 +50,77 @@ return function(U)
     return result
   end
 
-  -- Replaces the rectangle on the layer's cel. Works on a canvas-sized copy so cel
-  -- offsets don't matter, then trims the cel back to its content.
-  local function applyWrite(sprite, w)
-    local frame = U.frameNumber(sprite, w.frame)
-    local layer = U.writableLayer(sprite, w.layer)
+  local function decodeSource(sprite, w)
     local expected = U.FORMATS[sprite.colorMode]
     if w.format ~= expected then
       error(string.format("Pixel format %s does not match the sprite (%s)", tostring(w.format), expected))
     end
-
     local src = U.blankImage(sprite, math.floor(w.width), math.floor(w.height))
     local bytes = U.fromHex(w.data)
     if #bytes ~= #src.bytes then
       error(string.format("Pixel data has %d bytes, expected %d", #bytes, #src.bytes))
     end
     src.bytes = bytes
+    return src
+  end
 
-    local canvas = U.blankImage(sprite, sprite.width, sprite.height)
+  -- The area the new cel is built in, in sprite coordinates. Aseprite keeps cel pixels
+  -- outside the canvas (art moved partly off-screen, a canvas shrunk without trimming);
+  -- covering them too means a write never deletes art the user can't currently see.
+  -- Background cels always cover exactly the canvas.
+  local function workArea(sprite, layer, cel)
+    local canvas = Rectangle(0, 0, sprite.width, sprite.height)
+    if cel and not layer.isBackground then return canvas:union(cel.bounds) end
+    return canvas
+  end
+
+  -- Incoming pixels outside the canvas are ignored (PROTOCOL.md), so only the part of
+  -- the source that overlaps the canvas is drawn.
+  local function drawClipped(sprite, work, area, src, x, y, blend)
+    local canvas = Rectangle(0, 0, sprite.width, sprite.height)
+    local clip = canvas:intersect(Rectangle(x, y, src.width, src.height))
+    if clip.isEmpty then return end
+    local part = src
+    if clip.width ~= src.width or clip.height ~= src.height then
+      part = Image(src, Rectangle(clip.x - x, clip.y - y, clip.width, clip.height))
+    end
+    work:drawImage(part, Point(clip.x - area.x, clip.y - area.y), 255, blend)
+  end
+
+  -- Replaces the rectangle on the layer's cel, then trims the cel back to its content.
+  -- The frame always gets a cel of its own: when its cel was linked to other frames,
+  -- this frame is unlinked and the other frames keep the shared image unchanged.
+  local function applyWrite(sprite, w)
+    local frame = U.frameNumber(sprite, w.frame)
+    local layer = U.writableLayer(sprite, w.layer)
+    local src = decodeSource(sprite, w)
+
     local cel = layer:cel(frame)
     local opacity = cel and cel.opacity or 255
-    if cel then canvas:drawImage(cel.image, cel.position, 255, BlendMode.SRC) end
+    local area = workArea(sprite, layer, cel)
+    local work = U.blankImage(sprite, area.width, area.height)
+    if cel then
+      work:drawImage(cel.image, Point(cel.position.x - area.x, cel.position.y - area.y), 255, BlendMode.SRC)
+    end
     -- A Background layer has no transparency: Aseprite would show "erased" pixels as
     -- black, so transparent pixels keep what is there instead of replacing it.
     local blend = layer.isBackground and BlendMode.NORMAL or BlendMode.SRC
-    canvas:drawImage(src, Point(math.floor(w.x), math.floor(w.y)), 255, blend)
+    drawClipped(sprite, work, area, src, math.floor(w.x), math.floor(w.y), blend)
 
     if layer.isBackground then
-      -- Background cels always cover the whole canvas.
-      sprite:newCel(layer, frame, canvas, Point(0, 0))
-      return layer.name
+      sprite:newCel(layer, frame, work, Point(area.x, area.y))
+      return U.layerPath(layer)
     end
 
-    local bounds = canvas:shrinkBounds()
+    local bounds = work:shrinkBounds()
     if bounds.isEmpty then
       if cel then sprite:deleteCel(cel) end
     else
-      local newCel = sprite:newCel(layer, frame, Image(canvas, bounds), Point(bounds.x, bounds.y))
+      local position = Point(area.x + bounds.x, area.y + bounds.y)
+      local newCel = sprite:newCel(layer, frame, Image(work, bounds), position)
       newCel.opacity = opacity
     end
-    return layer.name
+    return U.layerPath(layer)
   end
 
   function M.write_image(p)
