@@ -193,7 +193,7 @@ interface ChatOptions {
   palette?: PaletteId;               // "auto" | "current" | a preset id
   size?: { width: number; height: number };   // canvas size for generate/variations/batch/directions
   target?: "new_sprite" | "new_layer" | "active_layer";
-  view?: "front" | "side" | "three_quarter" | "top_down" | "isometric";
+  view?: "front" | "side" | "three_quarter" | "top_down" | "isometric" | "tile";   // tile (v1.1): a seamless, tileable texture
   directions?: 4 | 8;
   count?: number;                    // variations: 2-4 (default 3); without text = variations of the open sprite
   items?: string[];                  // batch: one prompt per item; palette "auto" becomes the style's preset so the set matches
@@ -204,12 +204,25 @@ interface ChatOptions {
     frames?: number;                 // 2-16; frames/frameMs/loop default per preset (e.g. walk 8 x 100 ms)
     frameMs?: number;                // duration per frame
     loop?: boolean;
+    // v1.1
+    allDirections?: boolean;         // animate every direction tag ("down", "right", ...) of the sprite; down first, the rest matched to it, left mirrored from right when present
+    mode?: "new" | "between" | "continue";  // between: draw `frames` in-betweens between fromFrame and toFrame (both kept); continue: keep frames 1..keepFrames and draw the rest
+    fromFrame?: number;
+    toFrame?: number;
+    keepFrames?: number;
   };
   autoReview?: boolean;              // one extra look-and-fix pass at the end (every action; chat only when the model changed the art)
+
+  // v1.1 additions (all optional; omitted = v1.0 behaviour)
+  source?: "prompt" | "current";     // directions/variations: start from frame 1 of `sprite` (the user's art) instead of text
+  maxColors?: number;                // 2-64: hard color limit, enforced by the bridge after the run on the layers the run drew
+  forcePalette?: boolean;            // snap every pixel the run drew to the chosen palette (preset, "current" or "custom") after the run
+  customPalette?: string[];          // palette "custom": 2-256 colors as "#rrggbb"
+  reference?: { sprite: number; frame?: number };   // style reference: another open sprite to match (palette, outline, proportions, shading); attached as an image
 }
 
 type StyleId = "auto" | "8bit" | "16bit" | "gameboy" | "pico8" | "1bit" | "hd";
-type PaletteId = "auto" | "current" | "pico8" | "sweetie16" | "endesga32" | "endesga64"
+type PaletteId = "auto" | "current" | "custom" | "pico8" | "sweetie16" | "endesga32" | "endesga64"
   | "db16" | "db32" | "aap64" | "resurrect64" | "gameboy" | "nes" | "1bit";
 ```
 
@@ -271,3 +284,23 @@ With `ASEPRITE_MCP_DEV=1` the bridge opens a loopback endpoint (`127.0.0.1:7802`
 which answers `{event: "ui_debug_result", action, ok, error?}`. The extension ignores it unless
 `devMode = true` is set in its preferences (`__pref.lua`); synthetic input can't drive Aseprite's
 UI on every platform, so this is how screenshots and end-to-end tests are automated.
+
+## v1.1 additions (contract for the next release)
+
+- `chat` update `done`: `stats.undoSteps?: number` – how many undo steps the run added to its
+  sprite. The window offers "Undo AI run", which sends `tool_run undo {steps: undoSteps}` for that sprite.
+- Generate/variations/batch/directions that fail or are stopped before drawing anything close the
+  sprite the bridge created for them (`close_sprite {onlyIfEmpty: true}`).
+- New Lua method `frame_op` op `copy_cel {from, to, layer?, flip?: "horizontal" | "vertical"}`:
+  copies one layer's cel (default: every image layer) from frame `from` to frame `to`, optionally
+  mirrored, as one undo step.
+- New MCP tools: `import_image {path, layer?, frame?, x?, y?}` (a PNG from disk onto a layer,
+  read by the bridge) and `normalize_pixel_art {scale?: "auto" | number, maxColors?, binaryAlpha?,
+  cleanup?, ...target}` (detects and removes upscaling, snaps blocks to their dominant color).
+  Both are also allowed as `tool_run` instant tools.
+- `analyze_sprite` adds `score` (0-100) and `issues` (up to 5, with coordinates and the tool that fixes each).
+- `view_sprite {tiled?: boolean}` shows the image repeated 3x3 to check seamless tiles.
+- `replace_color {pairs?: [{from, to}]}` swaps several colors in one call (one undo step).
+- `write_pixels` returns a preview image like `draw_script` (`preview: false` turns it off).
+- `save_sprite` only writes `.aseprite`/`.ase`; `.png`/`.gif` go through `export_sprite`.
+
