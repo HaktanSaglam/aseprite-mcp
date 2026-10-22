@@ -4,7 +4,7 @@ import { cloneImage, type RgbaImage } from "../RgbaImage.js";
 export interface ColorAdjustments {
   /** Degrees, -180..180. */
   hue?: number;
-  /** -100..100: -100 removes all saturation, +100 saturates fully. */
+  /** -100..100: -100 removes all saturation, +100 doubles it (grays stay gray). */
   saturation?: number;
   /** -100..100: -100 is black, +100 is white (HSL lightness). */
   lightness?: number;
@@ -22,10 +22,23 @@ export function hasAdjustments(adj: ColorAdjustments): boolean {
   );
 }
 
+function clampAmount(amount: number): number {
+  return Math.max(-100, Math.min(100, amount)) / 100;
+}
+
 /** Moves v (0..1) toward 0 for negative amounts and toward 1 for positive ones. */
 function scaleToward(v: number, amount: number): number {
-  const t = Math.max(-100, Math.min(100, amount)) / 100;
+  const t = clampAmount(amount);
   return t < 0 ? v * (1 + t) : v + (1 - v) * t;
+}
+
+/**
+ * Scales saturation proportionally, like Aseprite's Hue/Saturation filter. Moving it
+ * toward 1 instead would give a gray (saturation 0, hue 0) full red chroma and push
+ * barely tinted grays to vivid colors.
+ */
+function scaleSaturation(s: number, amount: number): number {
+  return Math.min(1, s * (1 + clampAmount(amount)));
 }
 
 /**
@@ -37,7 +50,7 @@ export function adjustColor(r: number, g: number, b: number, adj: ColorAdjustmen
   if (adj.invert) rgb = [255 - rgb[0], 255 - rgb[1], 255 - rgb[2]];
   if (adj.hue || adj.saturation || adj.lightness) {
     const [h, s, l] = rgbToHsl(...rgb);
-    rgb = hslToRgb(h + (adj.hue ?? 0), scaleToward(s, adj.saturation ?? 0), scaleToward(l, adj.lightness ?? 0));
+    rgb = hslToRgb(h + (adj.hue ?? 0), scaleSaturation(s, adj.saturation ?? 0), scaleToward(l, adj.lightness ?? 0));
   }
   if (adj.brightness) {
     const offset = (Math.max(-100, Math.min(100, adj.brightness)) / 100) * 255;

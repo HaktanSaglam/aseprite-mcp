@@ -1,16 +1,15 @@
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import type { Rect } from "../../aseprite/protocol.js";
-import type { CanvasService, LayerTarget } from "../../canvas/CanvasService.js";
-import type { PixelFilter } from "../../pixel/composite.js";
+import type { TransformResult } from "../../canvas/CanvasService.js";
 import { analyzeImage } from "../../pixel/analyze.js";
-import { parseHex } from "../../pixel/color.js";
+import { formatHex, parseHex, type Rgba } from "../../pixel/color.js";
 import { removeBackground } from "../../pixel/effects/background.js";
 import { cleanupPixels } from "../../pixel/effects/cleanup.js";
 import { dropShadow } from "../../pixel/effects/dropShadow.js";
 import { outline } from "../../pixel/effects/outline.js";
-import { TRANSFORM_OPS, transformImage } from "../../pixel/effects/transform.js";
-import type { RgbaImage } from "../../pixel/RgbaImage.js";
+import { TRANSFORM_OPS, transformImage, transformSelection } from "../../pixel/effects/transform.js";
+import { storedColor } from "../../pixel/rawFormat.js";
 import type { ToolRegistrar } from "../ToolContext.js";
 import { jsonResult } from "../toolResult.js";
 
@@ -49,46 +48,46 @@ export function textResult(text: string): CallToolResult {
   return { content: [{ type: "text", text }] };
 }
 
-export interface EffectRun {
-  frames: number[];
-  /** Pixels that actually changed, counted only where the edit was allowed (selection). */
-  changed: number;
+/** canvas.transform's result: frames touched and exact counts of what the sprite now holds. */
+export type EffectRun = TransformResult;
+
+const RGB_HINT = 'add it with set_palette, or switch the sprite with edit_sprite {action: "color_mode", mode: "rgb"}';
+
+function sameColor(p: Rgba, q: Rgba): boolean {
+  return (p[3] === 0 && q[3] === 0) || p.every((v, i) => v === q[i]);
 }
 
-export function countChanged(before: RgbaImage, after: RgbaImage, filter?: PixelFilter): number {
-  let changed = 0;
-  const a = before.data;
-  const b = after.data;
-  for (let y = 0; y < before.height; y++) {
-    for (let x = 0; x < before.width; x++) {
-      const o = (y * before.width + x) * 4;
-      if (a[o] === b[o] && a[o + 1] === b[o + 1] && a[o + 2] === b[o + 2] && a[o + 3] === b[o + 3]) continue;
-      if (filter && !filter(x, y)) continue;
-      changed++;
-    }
-  }
-  return changed;
+/** The color the sprite stores for `hex` when that isn't `hex` itself (indexed palette, gray). */
+export function snappedColor(run: EffectRun, hex: string): string | undefined {
+  if (!run.storage) return undefined;
+  const requested = parseHex(hex);
+  const stored = storedColor(requested, run.storage);
+  return sameColor(stored, requested) ? undefined : formatHex(...stored);
+}
+
+/** `hex`, or the color the sprite really stored instead and why. */
+export function writtenColor(run: EffectRun, hex: string): string {
+  const stored = snappedColor(run, hex);
+  if (stored === undefined) return hex;
+  return run.storage?.format === "indexed"
+    ? `${stored} (the nearest palette color; ${hex} is not in the indexed palette: ${RGB_HINT})`
+    : `${stored} (${hex} stored as gray)`;
 }
 
 /**
- * canvas.transform plus an exact count of changed pixels, so tool summaries tell the
- * model what really happened (selection included). Pass `filter` when the caller
- * already read the selection, to avoid reading it twice.
+ * Indexed and grayscale sprites can't hold every color. Says so when an edit's colors
+ * were snapped, so the model never believes in colors the file doesn't have.
  */
-export async function runEffect(
-  canvas: CanvasService,
-  target: LayerTarget,
-  edit: (image: RgbaImage, frame: number) => RgbaImage,
-  filter?: PixelFilter,
-): Promise<EffectRun> {
-  const mask = filter ?? (target.selectionOnly ? await canvas.selectionFilter({ sprite: target.sprite }) : undefined);
-  let changed = 0;
-  const { frames } = await canvas.transform(target, (image, frame) => {
-    const edited = edit(image, frame);
-    changed += countChanged(image, edited, mask);
-    return edited;
-  });
-  return { frames, changed };
+export function snapNote(run: EffectRun): string {
+  if (run.snapped === 0) return "";
+  const pixels = plural(run.snapped, "pixel");
+  if (run.storage?.format === "indexed") {
+    return (
+      ` Indexed sprite: ${pixels} took the nearest palette color because the exact color is not in the palette ` +
+      `(${RGB_HINT}).`
+    );
+  }
+  return ` Grayscale sprite: ${pixels} stored as gray.`;
 }
 
 /** 'layer "Hero", frames 1-4' — what a summary says it touched. */
@@ -132,7 +131,7 @@ export const registerEffectTools: ToolRegistrar = (server, { gateway, canvas }) 
       }
       const rgba = color === undefined ? undefined : parseHex(color);
       const found = new Set<string>();
-      const run = await runEffect(canvas, { layer, frames, selectionOnly }, (image) => {
+      const run = await canvas.transform({ layer, frames, selectionOnly }, (image) => {
         const result = removeBackground(image, { mode, color: rgba, tolerance });
         result.colors.forEach((c) => found.add(c));
         return result.image;
@@ -148,7 +147,8 @@ export const registerEffectTools: ToolRegistrar = (server, { gateway, canvas }) 
         );
       }
       return textResult(
-        `Removed ${plural(run.changed, "background pixel")} (${[...found].join(", ")}, tolerance ${tolerance}) on ${where}.`,
+        `Removed ${plural(run.changed, "background pixel")} (${[...found].join(", ")}, tolerance ${tolerance}) ` +
+          `on ${where}.${snapNote(run)}`,
       );
     },
   );
@@ -177,7 +177,7 @@ export const registerEffectTools: ToolRegistrar = (server, { gateway, canvas }) 
     },
     async ({ color, placement, connectivity, layer, frames, selectionOnly }) => {
       const rgba = color === undefined ? undefined : parseHex(color);
-      const run = await runEffect(canvas, { layer, frames, selectionOnly }, (image) =>
+      const run = await canvas.transform({ layer, frames, selectionOnly }, (image) =>
         outline(image, { placement, connectivity, color: rgba }).image,
       );
       const where = describeTarget(layer, run.frames);
@@ -187,9 +187,10 @@ export const registerEffectTools: ToolRegistrar = (server, { gateway, canvas }) 
             "(empty layer, or the art fills the whole canvas: outline a layer that holds only the sprite).",
         );
       }
+      const how = color === undefined ? "automatic shades" : writtenColor(run, color);
       return textResult(
-        `Outlined ${placement} (${connectivity}-connected, ${color ?? "automatic shades"}): ` +
-          `${plural(run.changed, "pixel")} painted on ${where}.`,
+        `Outlined ${placement} (${connectivity}-connected, ${how}): ${plural(run.changed, "pixel")} painted on ` +
+          `${where}.${color === undefined ? snapNote(run) : ""}`,
       );
     },
   );
@@ -223,7 +224,7 @@ export const registerEffectTools: ToolRegistrar = (server, { gateway, canvas }) 
     async ({ minNeighbors, noise, layer, frames, selectionOnly }) => {
       let removed = 0;
       let recolored = 0;
-      const run = await runEffect(canvas, { layer, frames, selectionOnly }, (image) => {
+      const run = await canvas.transform({ layer, frames, selectionOnly }, (image) => {
         const result = cleanupPixels(image, { minNeighbors, noise });
         removed += result.removed;
         recolored += result.recolored;
@@ -233,9 +234,9 @@ export const registerEffectTools: ToolRegistrar = (server, { gateway, canvas }) 
       if (run.changed === 0) return textResult(`Already clean: no stray pixels on ${where}.`);
       const detail = `${plural(removed, "isolated pixel")} removed, ${plural(recolored, "noise pixel")} recolored`;
       return textResult(
-        selectionOnly
+        (selectionOnly
           ? `${plural(run.changed, "pixel")} changed inside the selection on ${where} (whole layer: ${detail}).`
-          : `Cleaned ${where}: ${detail}.`,
+          : `Cleaned ${where}: ${detail}.`) + snapNote(run),
       );
     },
   );
@@ -248,7 +249,9 @@ export const registerEffectTools: ToolRegistrar = (server, { gateway, canvas }) 
         "Flip, rotate (clockwise, about the canvas center) or shift a layer's pixels; the canvas keeps its size, so " +
         "on non-square canvases rotated corners that leave the canvas are clipped (edit_sprite rotates/flips the " +
         "whole sprite instead). shift moves the art by dx/dy; wrap: true brings pixels around to the other side " +
-        "(seamless tiles, scrolling). With selectionOnly the transform happens inside the selection's bounding box.",
+        "(seamless tiles, scrolling). With selectionOnly only the selected pixels move: flips and rotations turn " +
+        "them within the selection's bounding box, shift moves them anywhere on the canvas (wrap: around the box); " +
+        "unselected pixels stay where they are, and the selection outline itself does not move.",
       inputSchema: {
         op: z
           .enum(TRANSFORM_OPS)
@@ -261,18 +264,24 @@ export const registerEffectTools: ToolRegistrar = (server, { gateway, canvas }) 
     },
     async ({ op, dx, dy, wrap, layer, frames, selectionOnly }) => {
       if (op === "shift" && dx === 0 && dy === 0) throw new Error("shift needs dx and/or dy (e.g. dx: 2 moves right by 2)");
-      let region: Rect | undefined;
-      if (selectionOnly) {
-        const selection = await gateway.readSelection({});
-        region = selection.isEmpty ? undefined : (selection.bounds ?? selection.rect);
-      }
-      const run = await runEffect(canvas, { layer, frames, selectionOnly }, (image) =>
-        transformImage(image, op, { dx, dy, wrap }, region),
+      const options = { dx, dy, wrap };
+      const moved: { bounds?: Rect } = {};
+      // Not clipped to the selection: the selected pixels themselves move, possibly out of its old outline.
+      const run = await canvas.transform(
+        { layer, frames, selectionOnly },
+        (image, _frame, selection) => {
+          if (!selection) return transformImage(image, op, options);
+          moved.bounds = selection.bounds;
+          return transformSelection(image, op, options, selection.bounds, selection.contains);
+        },
+        { clipToSelection: false },
       );
       const what = op === "shift" ? `Shifted by (${dx}, ${dy})${wrap ? " with wrap" : ""}` : `Applied ${op}`;
-      const scope = region ? ` inside the selection (${region.width}x${region.height} at ${region.x},${region.y})` : "";
+      const box = moved.bounds;
+      const scope = box ? ` inside the selection (${box.width}x${box.height} at ${box.x},${box.y})` : "";
       return textResult(
-        `${what}${scope} on ${describeTarget(layer, run.frames)}: ${plural(run.changed, "pixel")} changed.`,
+        `${what}${scope} on ${describeTarget(layer, run.frames)}: ${plural(run.changed, "pixel")} changed.` +
+          snapNote(run),
       );
     },
   );
@@ -295,12 +304,14 @@ export const registerEffectTools: ToolRegistrar = (server, { gateway, canvas }) 
       if (dx === 0 && dy === 0) throw new Error("dx and dy can't both be 0: the shadow would hide behind the art");
       const rgba = parseHex(color);
       if (rgba[3] === 0) throw new Error("The shadow color must not be fully transparent");
-      const run = await runEffect(canvas, { layer, frames, selectionOnly }, (image) =>
+      const run = await canvas.transform({ layer, frames, selectionOnly }, (image) =>
         dropShadow(image, { dx, dy, color: rgba }).image,
       );
       const where = describeTarget(layer, run.frames);
       if (run.changed === 0) return textResult(`No shadow added on ${where}: no opaque art casts onto transparent pixels.`);
-      return textResult(`Drop shadow (${dx}, ${dy}) ${color}: ${plural(run.changed, "pixel")} painted on ${where}.`);
+      return textResult(
+        `Drop shadow (${dx}, ${dy}) ${writtenColor(run, color)}: ${plural(run.changed, "pixel")} painted on ${where}.`,
+      );
     },
   );
 

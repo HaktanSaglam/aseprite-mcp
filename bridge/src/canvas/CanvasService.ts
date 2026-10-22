@@ -2,10 +2,13 @@ import type {
   IPixelGateway,
   ISelectionGateway,
   ISpriteGateway,
+  Rect,
   SpriteInfo,
   SpriteRef,
+  WriteImageRequest,
 } from "../aseprite/AsepriteGateway.js";
-import { compose, maskFilter, type PaintMode, type PixelFilter } from "../pixel/composite.js";
+import { compose, countChangedPixels, maskFilter, type PaintMode, type PixelFilter } from "../pixel/composite.js";
+import { storedPixels, type PixelTarget } from "../pixel/rawFormat.js";
 import type { RgbaImage } from "../pixel/RgbaImage.js";
 
 export type FrameSelector = "current" | "all" | number[];
@@ -32,14 +35,47 @@ export interface LayerTarget extends SpriteRef {
   selectionOnly?: boolean;
 }
 
+/** The user's selection as an edit sees it. */
+export interface SelectionArea {
+  /** The smallest rectangle around the selected pixels. */
+  bounds: Rect;
+  /** Canvas coordinates: is this pixel selected? */
+  contains: PixelFilter;
+}
+
+export interface TransformOptions {
+  /**
+   * With selectionOnly, pixels outside the selection keep their old value (default).
+   * Off for edits that move the selected pixels themselves (flip, rotate, shift): those
+   * may land outside the selection and must not be cut off at its old outline.
+   */
+  clipToSelection?: boolean;
+}
+
+/** Turns a whole-layer image into the edited one; `selection` is set with selectionOnly. */
+export type LayerEdit = (image: RgbaImage, frame: number, selection?: SelectionArea) => RgbaImage;
+
+export interface TransformResult {
+  frames: number[];
+  /** Pixels whose stored color changed, over all frames (only where the edit was allowed). */
+  changed: number;
+  /** Edited pixels the sprite stores in another color than asked (indexed palette, gray). */
+  snapped: number;
+  /** How the layer stores its pixels; undefined means RGBA. */
+  storage?: PixelTarget;
+}
+
 type CanvasGateway = IPixelGateway & ISelectionGateway & Pick<ISpriteGateway, "getSpriteInfo">;
 
-function sameImage(a: RgbaImage, b: RgbaImage): boolean {
-  if (a.width !== b.width || a.height !== b.height) return false;
-  return Buffer.from(a.data.buffer, a.data.byteOffset, a.data.length).equals(
-    Buffer.from(b.data.buffer, b.data.byteOffset, b.data.length),
-  );
+/** One tool call's fixed target, so every RPC of the call hits the same sprite, layer and frame. */
+interface Pin {
+  info: SpriteInfo;
+  ref: { sprite: number };
+  /** The layer Aseprite would default to right now, or undefined to let it decide. */
+  layer?: string;
 }
+
+const ORIGIN = { x: 0, y: 0 };
 
 export function resolveFrames(selector: FrameSelector | undefined, info: SpriteInfo): number[] {
   if (selector === undefined || selector === "current") return [info.activeFrame];
@@ -54,6 +90,21 @@ export function resolveFrames(selector: FrameSelector | undefined, info: SpriteI
 }
 
 /**
+ * The layer Aseprite uses when none is named (U.defaultLayer in the extension): the
+ * active one, else the top image layer. Returned as a path so that a user clicking
+ * another layer or tab halfway through a call can't redirect its write; undefined
+ * when the path would be ambiguous (duplicate names), leaving the choice to Aseprite.
+ */
+export function defaultLayerPath(info: SpriteInfo): string | undefined {
+  const active = info.activeLayer === undefined ? [] : info.layers.filter((l) => l.name === info.activeLayer);
+  if (active.length > 1) return undefined;
+  const images = info.layers.filter((l) => !l.isGroup);
+  const layer = active.length === 1 && !active[0].isGroup ? active[0] : images[images.length - 1];
+  if (!layer) return undefined;
+  return info.layers.filter((l) => l.path === layer.path).length === 1 ? layer.path : undefined;
+}
+
+/**
  * Pixel editing on top of the raw gateway: compositing, selection masks and
  * multi-frame edits, so every tool gets the same semantics and a single undo step.
  */
@@ -62,59 +113,88 @@ export class CanvasService {
 
   async paint(requests: PaintRequest[], options: PaintOptions = {}): Promise<void> {
     const mode = options.mode ?? "over";
-    const ref: SpriteRef = { sprite: options.sprite };
-    const filter = options.selectionOnly ? await this.selectionFilter(ref) : undefined;
+    const pin = await this.pin(options.sprite);
+    const filter = options.selectionOnly ? (await this.selectionArea(pin.ref))?.contains : undefined;
+    // Indexed pixels are read even when replaced, so the untouched ones keep their exact index.
+    const readBase = mode === "over" || filter !== undefined || pin.info.colorMode === "indexed";
 
-    const writes = [];
+    const writes: WriteImageRequest[] = [];
     for (const request of requests) {
+      const frame = request.frame ?? pin.info.activeFrame;
+      const layer = request.layer ?? pin.layer;
       let image = request.image;
-      if (mode === "over" || filter) {
-        const base = await this.gateway.readImage({
+      if (readBase) {
+        const { image: base } = await this.gateway.readImage({
           x: request.x,
           y: request.y,
           width: image.width,
           height: image.height,
-          frame: request.frame,
-          layer: request.layer,
+          frame,
+          layer,
           missingOk: true,
-          ...ref,
+          ...pin.ref,
         });
-        image = compose(base.image, image, mode, request, filter);
+        if (mode === "over" || filter) image = compose(base, image, mode, request, filter);
+        image = { ...image, source: base.source };
       }
-      writes.push({ ...request, image });
+      writes.push({ x: request.x, y: request.y, image, frame, layer });
     }
-    await this.gateway.writeImages(writes, ref);
+    await this.gateway.writeImages(writes, pin.ref);
   }
 
   /**
    * Reads the whole layer for each target frame, lets `edit` return the new pixels and
-   * writes them back (respecting the selection) as one undo step.
+   * writes them back (respecting the selection) as one undo step. Counts what really
+   * changed in the sprite, after indexed/grayscale sprites snapped the colors.
    */
-  async transform(
-    target: LayerTarget,
-    edit: (image: RgbaImage, frame: number) => RgbaImage,
-  ): Promise<{ frames: number[] }> {
-    const ref: SpriteRef = { sprite: target.sprite };
-    const info = await this.gateway.getSpriteInfo(ref);
-    const frames = resolveFrames(target.frames, info);
-    const filter = target.selectionOnly ? await this.selectionFilter(ref) : undefined;
+  async transform(target: LayerTarget, edit: LayerEdit, options: TransformOptions = {}): Promise<TransformResult> {
+    const pin = await this.pin(target.sprite);
+    const frames = resolveFrames(target.frames, pin.info);
+    const layer = target.layer ?? pin.layer;
+    const selection = target.selectionOnly ? await this.selectionArea(pin.ref) : undefined;
+    const clip = options.clipToSelection === false ? undefined : selection;
 
-    const writes = [];
+    const writes: WriteImageRequest[] = [];
+    let changed = 0;
+    let snapped = 0;
+    let storage: PixelTarget | undefined;
     for (const frame of frames) {
-      const { image } = await this.gateway.readImage({ frame, layer: target.layer, ...ref });
-      const edited = edit(image, frame);
-      const result = filter ? compose(image, edited, "replace", { x: 0, y: 0 }, filter) : edited;
+      const { image } = await this.gateway.readImage({ frame, layer, ...pin.ref });
+      storage ??= image.source?.target;
+      const edited = edit(image, frame, selection);
+      const requested = clip ? compose(image, edited, "replace", ORIGIN, clip.contains) : edited;
+      const stored = asStored(requested, image);
+      snapped += countChangedPixels(requested, stored);
+      const frameChanged = countChangedPixels(image, stored);
       // Rewriting an unchanged frame would still unlink its cel and add an undo step.
-      if (sameImage(image, result)) continue;
-      writes.push({ x: 0, y: 0, image: result, frame, layer: target.layer });
+      if (frameChanged === 0) continue;
+      changed += frameChanged;
+      writes.push({ x: 0, y: 0, image: stored, frame, layer });
     }
-    if (writes.length > 0) await this.gateway.writeImages(writes, ref);
-    return { frames };
+    if (writes.length > 0) await this.gateway.writeImages(writes, pin.ref);
+    return { frames, changed, snapped, storage };
   }
 
   async selectionFilter(ref: SpriteRef): Promise<PixelFilter | undefined> {
+    return (await this.selectionArea(ref))?.contains;
+  }
+
+  /** The selection, or undefined when nothing is selected. */
+  async selectionArea(ref: SpriteRef): Promise<SelectionArea | undefined> {
     const selection = await this.gateway.readSelection(ref);
     if (selection.isEmpty) return undefined;
-    return maskFilter(selection.rect, selection.mask);
+    return { bounds: selection.bounds ?? selection.rect, contains: maskFilter(selection.rect, selection.mask) };
   }
+
+  private async pin(sprite: number | undefined): Promise<Pin> {
+    const info = await this.gateway.getSpriteInfo({ sprite });
+    return { info, ref: { sprite: info.id }, layer: defaultLayerPath(info) };
+  }
+}
+
+/** `edited` as the sprite will hold it; pixels left as read keep their exact stored value. */
+function asStored(edited: RgbaImage, read: RgbaImage): RgbaImage {
+  const source = read.source;
+  if (!source || edited.width !== read.width || edited.height !== read.height) return edited;
+  return storedPixels({ ...edited, source }, source.target);
 }

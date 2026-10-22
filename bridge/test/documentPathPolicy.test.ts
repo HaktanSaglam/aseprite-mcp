@@ -77,6 +77,50 @@ describe("resolveOutputPath", () => {
   it("uses the label in messages", () => {
     expect(() => resolveOutputPath("a.json", { extensions: [".json"], label: "dataPath" }, fs)).toThrow(/^dataPath must be absolute/);
   });
+
+  it("refuses network (UNC) paths before touching the file system", () => {
+    const untouchable: PathProbe = {
+      homeDir: () => abs("/home/me"),
+      kind: () => {
+        throw new Error("probed a network path");
+      },
+    };
+    for (const path of ["\\\\attacker.example\\share\\x.png", "//attacker.example/share/x.png", "\\\\?\\C:\\x.png", "/\\host\\x.png"]) {
+      expect(() => resolveOutputPath(path, PNG, untouchable)).toThrow(/network paths .* are not allowed/);
+    }
+  });
+
+  it("refuses hidden folders and dotfiles, where apps keep their settings", () => {
+    const home = probe(["/home/me", "/home/me/.claude", "/home/me/.config/app"]);
+    expect(() => resolveOutputPath("~/.claude/settings.json", { extensions: [".json"], overwrite: true }, home)).toThrow(
+      /inside "\.claude", a hidden name/,
+    );
+    expect(() => resolveOutputPath("~/.config/app/x.png", PNG, home)).toThrow(/hidden name/);
+    expect(() => resolveOutputPath("~/.hero.png", PNG, home)).toThrow(/hidden name/);
+    // Saving the document over itself stays a normal save, wherever the user keeps it.
+    const own = { extensions: [".aseprite"], currentFile: abs("/home/me/.config/app/own.aseprite") };
+    expect(resolveOutputPath("~/.config/app/own.aseprite", own, home)).toBe(abs("/home/me/.config/app/own.aseprite"));
+  });
+
+  it("only replaces an existing .json when it is Aseprite sprite-sheet data", () => {
+    const texts: Record<string, string> = {
+      [abs("/art/sheet.json")]: '{"frames": {"hero 0.aseprite": {}}, "meta": {"app": "https://www.aseprite.org/"}}',
+      [abs("/art/package.json")]: '{"name": "my-app", "scripts": {}}',
+      [abs("/art/broken.json")]: "{ not json",
+    };
+    const files = probe(["/art"], Object.keys(texts));
+    const withText: PathProbe = { ...files, readText: (path) => texts[path] ?? null };
+    const json = { extensions: [".json"], overwrite: true, label: "dataPath" };
+    expect(resolveOutputPath("/art/sheet.json", json, withText)).toBe(abs("/art/sheet.json"));
+    for (const name of ["package.json", "broken.json"]) {
+      expect(() => resolveOutputPath(`/art/${name}`, json, withText)).toThrow(/not Aseprite sprite-sheet data/);
+      // The advice must not be "pass overwrite: true" when that would not help.
+      expect(() => resolveOutputPath(`/art/${name}`, { ...json, overwrite: false }, withText)).toThrow(/choose another name/);
+    }
+    // A probe that can't read files never lets an existing .json be replaced.
+    expect(() => resolveOutputPath("/art/sheet.json", json, files)).toThrow(/not Aseprite sprite-sheet data/);
+    expect(resolveOutputPath("/art/new.json", json, withText)).toBe(abs("/art/new.json"));
+  });
 });
 
 describe("nodePathProbe (real file system)", () => {
@@ -94,5 +138,14 @@ describe("nodePathProbe (real file system)", () => {
   it("works end to end with the default probe", () => {
     expect(resolveOutputPath(join(root, "sub", "a.png"), PNG)).toBe(join(root, "sub", "a.png"));
     expect(() => resolveOutputPath(join(root, "taken.png"), PNG)).toThrow(/already exists/);
+  });
+
+  it("reads existing .json files to tell sprite-sheet data from anything else", () => {
+    writeFileSync(join(root, "sheet.json"), JSON.stringify({ frames: [], meta: { app: "aseprite" } }));
+    writeFileSync(join(root, "config.json"), JSON.stringify({ apiKey: "x" }));
+    const json = { extensions: [".json"], overwrite: true };
+    expect(resolveOutputPath(join(root, "sheet.json"), json)).toBe(join(root, "sheet.json"));
+    expect(() => resolveOutputPath(join(root, "config.json"), json)).toThrow(/not Aseprite sprite-sheet data/);
+    expect(nodePathProbe.readText!(join(root, "missing.json"))).toBeNull();
   });
 });
