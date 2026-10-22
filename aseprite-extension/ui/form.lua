@@ -45,6 +45,8 @@ return function(C, S)
   function Form:track(spec, kind, w)
     w.kind = kind
     w.showIf = spec.showIf
+    -- What the dialog shows, so Form:enable can skip no-op changes.
+    w.enabled = spec.enabled ~= false
     self.widgets[spec.id] = w
     self.order[#self.order + 1] = spec.id
   end
@@ -104,13 +106,15 @@ return function(C, S)
 
   -- list: static {id, label} list, or a function returning the current one (providers).
   function Form:combo(spec)
-    self:track(spec, "combo", { key = spec.key, list = spec.list, onchange = spec.onchange })
     local list = type(spec.list) == "function" and spec.list() or spec.list
+    local labels = C.labels(list)
+    -- labels: what the combobox shows now, so setOptions can skip identical refills.
+    self:track(spec, "combo", { key = spec.key, list = spec.list, onchange = spec.onchange, labels = labels })
     local selectedId = spec.selected
     if selectedId == nil and spec.key then selectedId = S.get(self.prefs, spec.key) end
     self.dlg:combobox{
       id = spec.id, label = spec.label,
-      options = C.labels(list),
+      options = labels,
       option = C.labelOf(list, selectedId),
       onchange = self:userChange(spec.onchange),
     }
@@ -126,7 +130,7 @@ return function(C, S)
   end
 
   function Form:label(spec)
-    self:track(spec, "label", {})
+    self:track(spec, "label", { text = spec.text or "" })
     self.dlg:label{ id = spec.id, label = spec.label, text = spec.text or "" }
   end
 
@@ -137,6 +141,7 @@ return function(C, S)
       hexpand = spec.hexpand, vexpand = spec.vexpand,
       onpaint = self:safe(spec.onpaint),
       onwheel = spec.onwheel and self:safe(spec.onwheel) or nil,
+      onmousedown = spec.onmousedown and self:safe(spec.onmousedown) or nil,
     }
   end
 
@@ -201,15 +206,35 @@ return function(C, S)
     if not ok then error(err, 0) end
   end
 
+  local function sameLabels(a, b)
+    if a == nil or #a ~= #b then return false end
+    for i = 1, #b do
+      if a[i] ~= b[i] then return false end
+    end
+    return true
+  end
+
   -- Refills a combobox. Returns false when this Aseprite can't change options in place
   -- (the caller then rebuilds the dialog).
+  -- Unchanged options are left alone: every bridge_info (one per reconnect) would
+  -- otherwise relayout the dialog, and refilling the provider box from inside its own
+  -- onchange would delete the items of the list the user is just closing.
   function Form:setOptions(id, list, selectedId)
     local labels = C.labels(list)
     local want = C.labelOf(list, selectedId)
+    local w = self.widgets[id]
+    if w and sameLabels(w.labels, labels) then
+      if self.dlg.data[id] ~= want then
+        self:quietly(function() self.dlg:modify{ id = id, option = want } end)
+      end
+      return true
+    end
     self:quietly(function()
       self.dlg:modify{ id = id, options = labels, option = want }
     end)
-    return self.dlg.data[id] == want
+    local ok = self.dlg.data[id] == want
+    if w and ok then w.labels = labels end
+    return ok
   end
 
   function Form:select(id, selectedId)
@@ -236,12 +261,25 @@ return function(C, S)
     end
   end
 
+  -- enable and setText are called on every state change (and enable by the spinner), so
+  -- they only reach the dialog when the value differs: a label's new text relayouts the
+  -- whole dialog, and a bridge_info per reconnect shouldn't make it flicker.
   function Form:enable(id, enabled)
-    if self.widgets[id] then self.dlg:modify{ id = id, enabled = enabled } end
+    local w = self.widgets[id]
+    if not w or w.enabled == enabled then return end
+    w.enabled = enabled
+    self.dlg:modify{ id = id, enabled = enabled }
   end
 
+  -- Labels only: an entry's text changes as the user types, so it can't be cached.
   function Form:setText(id, text)
-    if self.widgets[id] then self.dlg:modify{ id = id, text = text } end
+    local w = self.widgets[id]
+    if not w then return end
+    if w.kind == "label" then
+      if w.text == text then return end
+      w.text = text
+    end
+    self.dlg:modify{ id = id, text = text }
   end
 
   -- Sets a widget from an outside value (dev hook): combobox values may be an option id
@@ -253,6 +291,7 @@ return function(C, S)
     self:quietly(function()
       if w.kind == "entry" or w.kind == "label" then
         dlg:modify{ id = id, text = tostring(value or "") }
+        if w.kind == "label" then w.text = tostring(value or "") end
       elseif w.kind == "number" then
         dlg:modify{ id = id, text = tostring(math.floor(tonumber(value) or 0)) }
       elseif w.kind == "check" then

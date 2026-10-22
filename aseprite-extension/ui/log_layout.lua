@@ -15,11 +15,12 @@ return function(W)
   local GAP_AFTER = { tool = 3, status = 3, progress = 3, result = 3 }
   local DEFAULT_GAP = 6
 
+  -- The cache key is compared field by field: building prefix .. text for every message
+  -- on every paint would copy the whole history several times a second.
   local function linesFor(m, prefix, width, measure)
-    local key = prefix .. m.text
-    if m._wrapWidth == width and m._wrapKey == key then return m._lines end
-    local lines = W.wrap(key, width, measure)
-    m._wrapWidth, m._wrapKey, m._lines = width, key, lines
+    if m._wrapWidth == width and m._wrapText == m.text and m._wrapPrefix == prefix then return m._lines end
+    local lines = W.wrap(prefix .. m.text, width, measure)
+    m._wrapWidth, m._wrapText, m._wrapPrefix, m._lines = width, m.text, prefix, lines
     return lines
   end
 

@@ -21,7 +21,13 @@ return function(T, F, Header)
     local status = F.connection(conn)
     local model = { conn = status, ai = ai, busy = session.busy, phase = phase or 0 }
     if session.busy then
-      model.working = session.awaiting and "Sending..." or F.working(session:elapsed(), session.tool, session.progress)
+      if session.stopping then
+        model.working = "Stopping..."
+      elseif session.awaiting then
+        model.working = "Sending..."
+      else
+        model.working = F.working(session:elapsed(), session.tool, session.progress)
+      end
       model.progress = session.progress
     elseif status.state ~= "ok" then
       model.note = { text = "It reconnects by itself once the bridge is running.", kind = "dim" }
