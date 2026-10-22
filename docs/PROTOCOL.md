@@ -25,7 +25,10 @@ the bridge, where it is fast, typed and unit-tested.
 - `sprite` (optional, every method): the `sprite.id` to act on. Omitted → active sprite.
   Lets parallel jobs keep drawing into their sprite while the user switches tabs.
 - Frames are **1-based** (like the Aseprite UI). Omitted → active frame.
-- Layers are addressed by name or by group path (`"Group/Layer"`). Omitted → active layer.
+- Layers are addressed by name or by group path (`"Group/Layer"`). Omitted → active layer;
+  when the active layer is a group, its topmost image layer (error if it has none). Results
+  that name a layer (`activeLayer`, `layer`) give the full path, so passing it back
+  addresses the same layer even when names repeat across groups.
 - Colors are lowercase hex strings without `#`: `rrggbbaa`.
 - Pixel payloads are **hex strings of raw image bytes** (`image.bytes`), no row padding:
   - `rgba`: 4 bytes per pixel (r, g, b, a)
@@ -43,7 +46,7 @@ the bridge, where it is fast, typed and unit-tested.
 | `list_sprites` | – | `{sprites: SpriteSummary[]}` |
 | `activate_sprite` | `sprite` | `{ok}` |
 | `get_sprite_info` | – | `SpriteInfo` |
-| `create_sprite` | `width, height, colorMode?("rgb"\|"grayscale"\|"indexed"), frames?, background?, name?` (tab title) | `SpriteInfo` (new sprite becomes active) |
+| `create_sprite` | `width, height, colorMode?("rgb"\|"grayscale"\|"indexed"), frames?, background?` (`rrggbb`/`rrggbbaa`, validated before the sprite opens), `name?` (tab title) | `SpriteInfo` (new sprite becomes active) |
 | `sprite_op` | `op` + op params (below) | `SpriteInfo` |
 | `undo` / `redo` | `steps?` (default 1) | `{ok}` |
 | `save_sprite` | `path?` (omitted → current filename), `copy?` | `{ok, path}` |
@@ -64,7 +67,7 @@ SpriteInfo = {
   frames: [{ index, durationMs }],
   layers: [{ name, path, isGroup, isVisible, isEditable, opacity, blendMode, stackIndex, parent? }],
   tags: [{ name, from, to, direction("forward"|"reverse"|"pingpong"|"pingpong_reverse"), repeats }],
-  activeFrame, activeLayer?, selection?: {x, y, width, height},
+  activeFrame, activeLayer?: string /* path, e.g. "Head/Shade" */, selection?: {x, y, width, height},
   paletteSize, transparentIndex
 }
 ```
@@ -76,7 +79,7 @@ SpriteInfo = {
 | method | params | result |
 |---|---|---|
 | `read_image` | `x?, y?, width?, height?` (default whole canvas), `frame?, layer?, flattened?, missingOk?` | `{x, y, width, height, format, data, palette?, transparentIndex?}` |
-| `write_image` | `x, y, width, height, frame?, layer?, format, data` | `{ok, layer}` |
+| `write_image` | `x, y, width, height, frame?, layer?, format, data` | `{ok, layer}` (layer path) |
 | `write_images` | `writes: write_image params[]` | `{ok, count}` |
 
 - `read_image` with `flattened: true` renders all visible layers and always returns `rgba`.
@@ -84,9 +87,13 @@ SpriteInfo = {
   `transparentIndex` are included for `indexed`). Pixels outside the canvas or the cel are
   transparent. `missingOk: true` returns transparent pixels when the layer doesn't exist.
 - `write_image` **replaces** every pixel of the rectangle (transparent included) on the
-  layer, creating the layer (on top) when it doesn't exist. `format` must match the
-  sprite's color mode. Pixels outside the canvas are ignored. The cel is trimmed to its
-  content afterwards. Locked, group and tilemap layers are rejected.
+  layer, creating the layer (on top) when it doesn't exist; `"Group/Layer"` creates `Layer`
+  inside the existing group `Group` (error naming the group if it doesn't exist). `format`
+  must match the sprite's color mode. Incoming pixels outside the canvas are ignored; cel
+  pixels already outside the canvas are kept. The cel is trimmed to its content
+  afterwards. Locked, group and tilemap layers are rejected.
+- A write to a frame whose cel is linked to other frames gives that frame its own cel
+  (unlinked); the other linked frames keep the shared image unchanged.
 - `write_images` applies several writes (e.g. one per animation frame) as one undo step.
 
 ### Selection
@@ -104,7 +111,7 @@ Shapes (ellipses, color/alpha masks, ...) are computed by the bridge and sent as
 
 | method | params | result |
 |---|---|---|
-| `layer_op` | `op` + params below | `{ok, layer?}` |
+| `layer_op` | `op` + params below | `{ok, layer?}` (layer path) |
 | `frame_op` | `op` + params below | `{ok, frames}` |
 | `tag_op` | `op` + params below | `{ok}` |
 | `get_palette` | – | `{colors: string[], transparentIndex}` |
@@ -112,11 +119,14 @@ Shapes (ellipses, color/alpha masks, ...) are computed by the bridge and sent as
 
 `layer_op`:
 - `add` `{name, group?, above?, isGroup?}` – new layer on top (or right above `above`, or inside `group`).
+  A `name` like `"Group/Layer"` means `Layer` inside the existing group `Group`.
 - `delete` `{name}`
 - `update` `{name, newName?, visible?, opacity?(0-255), blendMode?, editable?}`
 - `move` `{name, above?, below?, group?}` – `group: ""` moves it to the top level.
-- `duplicate` `{name, newName?}`
-- `merge_down` `{name}`
+- `duplicate` `{name, newName?}` – copy and rename are one undo step.
+- `merge_down` `{name}` – into the layer directly below in the same group; `layer` is that
+  layer. Errors when there is no layer below, or when either layer is a group, tilemap or
+  reference layer (Aseprite can't merge those).
 - `activate` `{name}`
 
 `frame_op`:

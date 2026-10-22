@@ -66,7 +66,11 @@ end
 
 function U.hexToColor(hex)
   hex = tostring(hex):gsub("^#", "")
-  if #hex ~= 6 and #hex ~= 8 then error("Invalid color: " .. hex) end
+  -- tonumber("zz", 16) is nil, which Color{} silently treats as 0: "yellow" would
+  -- become a transparent color instead of an error.
+  if (#hex ~= 6 and #hex ~= 8) or not hex:match("^%x+$") then
+    error("Invalid color: " .. hex .. " (expected rrggbb or rrggbbaa hex)")
+  end
   return Color{
     r = tonumber(hex:sub(1, 2), 16),
     g = tonumber(hex:sub(3, 4), 16),
@@ -154,15 +158,40 @@ function U.requireLayer(sprite, name)
   return layer
 end
 
--- The active layer only counts if it belongs to this sprite; otherwise use the top
--- image layer so jobs on a background tab still have a sensible default.
-function U.defaultLayer(sprite)
-  if app.sprite == sprite and app.layer and app.layer.isImage then return app.layer end
+-- "Group/Layer", the same path get_sprite_info lists. Bare names are ambiguous as soon
+-- as two groups hold a layer of the same name ("Head/Shade", "Body/Shade").
+function U.layerPath(layer)
+  local path = layer.name
+  local parent = layer.parent
+  while parent ~= nil and parent ~= layer.sprite do
+    path = parent.name .. "/" .. path
+    parent = parent.parent
+  end
+  return path
+end
+
+-- eachLayer visits bottom to top, so the last image layer seen is the topmost one.
+local function topImageLayer(layers)
   local top
-  U.eachLayer(sprite.layers, function(layer)
+  U.eachLayer(layers, function(layer)
     if layer.isImage then top = layer end
   end)
   return top
+end
+
+-- The active layer only counts if it belongs to this sprite; otherwise use the top
+-- image layer so jobs on a background tab still have a sensible default.
+-- An active group means "somewhere in here": falling back to the sprite's top layer
+-- would draw into an unrelated group, so stay inside it or refuse.
+function U.defaultLayer(sprite)
+  local active = app.sprite == sprite and app.layer or nil
+  if active and active.isImage then return active end
+  if active and active.isGroup then
+    local inside = topImageLayer(active.layers)
+    if inside then return inside end
+    error('Active layer is a group; pass layer ("' .. U.layerPath(active) .. '" has no image layer inside)')
+  end
+  return topImageLayer(sprite.layers)
 end
 
 function U.checkWritable(layer)
@@ -178,6 +207,27 @@ function U.checkWritable(layer)
   return layer
 end
 
+-- Creates a layer (or group) from a path: "Body/Outline" is "Outline" inside the
+-- existing group "Body", matching how every other call addresses layers. A top-level
+-- layer literally named "Body/Outline" would make that path ambiguous later.
+-- The group is checked before anything is created, so a typo leaves no stray layer.
+function U.createLayer(sprite, path, isGroup)
+  path = tostring(path)
+  local groupPath, name = path:match("^(.*)/([^/]*)$")
+  if not groupPath then groupPath, name = nil, path end
+  if name == "" or groupPath == "" then error("Invalid layer path: " .. path) end
+  local group
+  if groupPath then
+    group = U.findLayer(sprite, groupPath)
+    if not group then error('Group not found: "' .. groupPath .. '" (create it first or pass an existing group)') end
+    if not group.isGroup then error('Not a group: "' .. groupPath .. '"') end
+  end
+  local layer = isGroup and sprite:newGroup() or sprite:newLayer()
+  layer.name = name
+  if group then layer.parent = group end
+  return layer
+end
+
 -- Named layers are created on demand so the AI can keep its work on its own layer.
 function U.writableLayer(sprite, name)
   if name == nil then
@@ -185,11 +235,7 @@ function U.writableLayer(sprite, name)
     if not layer then error("Sprite has no image layer") end
     return U.checkWritable(layer)
   end
-  local layer = U.findLayer(sprite, name)
-  if not layer then
-    layer = sprite:newLayer()
-    layer.name = name
-  end
+  local layer = U.findLayer(sprite, name) or U.createLayer(sprite, name)
   return U.checkWritable(layer)
 end
 

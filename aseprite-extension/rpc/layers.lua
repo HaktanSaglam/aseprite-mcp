@@ -23,12 +23,43 @@ return function(U)
     layer.parent = group
   end
 
+  -- Aseprite's MergeDownLayer silently does nothing unless both layers hold plain
+  -- pixels, so check first and the caller gets a reason instead of a fake "ok".
+  local function mergeableKind(layer)
+    if layer.isGroup then return "a group" end
+    if layer.isTilemap then return "a tilemap layer" end
+    local okRef, isReference = pcall(function() return layer.isReference end)
+    if okRef and isReference then return "a reference layer" end
+    return nil
+  end
+
+  local function layerBelow(layer)
+    local index = layer.stackIndex
+    if index <= 1 then return nil end
+    return layer.parent.layers[index - 1]
+  end
+
+  local function checkMergeDown(layer)
+    local kind = mergeableKind(layer)
+    if kind then error('Cannot merge down "' .. U.layerPath(layer) .. '": it is ' .. kind) end
+    local below = layerBelow(layer)
+    if not below then
+      error('Cannot merge down "' .. U.layerPath(layer) .. '": there is no layer below it in its group')
+    end
+    kind = mergeableKind(below)
+    if kind then
+      error('Cannot merge "' .. U.layerPath(layer) .. '" into "' .. U.layerPath(below) .. '": that is ' .. kind)
+    end
+    return below
+  end
+
   local OPS = {
     add = function(sprite, p)
       if not p.name then error("name is required") end
-      local layer = p.isGroup and sprite:newGroup() or sprite:newLayer()
-      layer.name = p.name
-      if p.group then setGroup(sprite, layer, p.group) end
+      -- "group" + "name" and a "Group/Name" path both mean "inside that group".
+      local path = p.name
+      if p.group and p.group ~= "" then path = p.group .. "/" .. p.name end
+      local layer = U.createLayer(sprite, path, p.isGroup)
       if p.above then placeAbove(layer, U.requireLayer(sprite, p.above)) end
       return layer
     end,
@@ -63,27 +94,28 @@ return function(U)
       return layer
     end,
 
+    -- Runs with the sprite active (see COMMAND_OPS), so the command and the rename
+    -- land in the same transaction.
     duplicate = function(sprite, p)
-      local layer = U.requireLayer(sprite, p.name)
-      local copy
-      U.withActive(sprite, function()
-        app.layer = layer
-        app.command.DuplicateLayer()
-        copy = app.layer
-      end)
+      app.layer = U.requireLayer(sprite, p.name)
+      app.command.DuplicateLayer()
+      local copy = app.layer
       if p.newName then copy.name = p.newName end
       return copy
     end,
 
     merge_down = function(sprite, p)
       local layer = U.requireLayer(sprite, p.name)
-      local merged
-      U.withActive(sprite, function()
-        app.layer = layer
-        app.command.MergeDownLayer()
-        merged = app.layer
-      end)
-      return merged
+      local below = checkMergeDown(layer)
+      local parent, count = layer.parent, #layer.parent.layers
+      app.layer = layer
+      app.command.MergeDownLayer()
+      -- Belt and braces for refusals the checks above don't know about (e.g. a
+      -- future layer kind): the source layer must be gone.
+      if #parent.layers ~= count - 1 then
+        error('Aseprite refused to merge "' .. U.layerPath(layer) .. '" down')
+      end
+      return below
     end,
 
     activate = function(sprite, p)
@@ -94,22 +126,38 @@ return function(U)
     end,
   }
 
-  -- Commands like DuplicateLayer create their own undo step, so only the plain
-  -- property edits are wrapped in a transaction.
-  local NO_TRANSACTION = { duplicate = true, merge_down = true, activate = true }
+  -- Commands act on the active sprite, and app.transaction only groups changes of the
+  -- active sprite, so these ops switch to it first and open the transaction there.
+  -- Commands then join the open transaction: duplicate + rename is ONE undo step.
+  local COMMAND_OPS = { duplicate = true, merge_down = true }
+
+  local function inTransaction(sprite, p, op)
+    local layer
+    local label = "AI: layer " .. p.op
+    if COMMAND_OPS[p.op] then
+      U.withActive(sprite, function()
+        app.transaction(label, function() layer = op(sprite, p) end)
+      end)
+    else
+      app.transaction(label, function() layer = op(sprite, p) end)
+    end
+    return layer
+  end
 
   function M.layer_op(p)
     local sprite = U.sprite(p)
     local op = OPS[p.op]
     if not op then error("Unknown layer_op: " .. tostring(p.op)) end
     local layer
-    if NO_TRANSACTION[p.op] then
+    -- Activating changes no document data, so there is nothing to undo.
+    if p.op == "activate" then
       layer = op(sprite, p)
     else
-      app.transaction("AI: layer " .. p.op, function() layer = op(sprite, p) end)
+      layer = inTransaction(sprite, p, op)
     end
     app.refresh()
-    return { ok = true, layer = layer and layer.name or nil }
+    -- A path, so passing it back addresses this layer even when names repeat.
+    return { ok = true, layer = layer and U.layerPath(layer) or nil }
   end
 
   return M

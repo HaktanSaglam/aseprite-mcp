@@ -287,6 +287,158 @@ test("export frames writes one padded file per frame", function()
   eq(app.pixelColor.rgbaR(third:getPixel(0, 0)), 255, "frame 3 content")
 end)
 
+local function layerPaths(info)
+  local paths = {}
+  for _, l in ipairs(info.layers) do paths[#paths + 1] = l.path end
+  return table.concat(paths, ",")
+end
+
+-- A layer with one opaque pixel so read_image results are easy to compare.
+local RED, GREEN, BLUE, CLEAR = "ff0000ff", "00ff00ff", "0000ffff", "00000000"
+
+test("activeLayer is the layer path, and passing it back hits that layer", function()
+  call("create_sprite", { width = 1, height = 1 })
+  for _, group in ipairs({ "Body", "Head" }) do
+    call("layer_op", { op = "add", name = group, isGroup = true })
+    call("layer_op", { op = "add", name = "Shade", group = group })
+  end
+  call("layer_op", { op = "activate", name = "Head/Shade" })
+  local info = call("get_sprite_info", {})
+  eq(info.activeLayer, "Head/Shade", "active layer path")
+  eq(layerPaths(info):find("Head/Shade", 1, true) ~= nil, true, "listed under the same path")
+  local r = call("write_image", { x = 0, y = 0, width = 1, height = 1, layer = info.activeLayer, format = "rgba", data = RED })
+  eq(r.layer, "Head/Shade", "write reports the path")
+  eq(call("read_image", { layer = "Head/Shade" }).data, RED, "drawn on Head/Shade")
+  eq(call("read_image", { layer = "Body/Shade" }).data, CLEAR, "Body/Shade untouched")
+end)
+
+test("an active group keeps default reads and writes inside it", function()
+  call("create_sprite", { width = 1, height = 1 })
+  call("layer_op", { op = "add", name = "Hero", isGroup = true })
+  call("layer_op", { op = "add", name = "Body", group = "Hero" })
+  call("layer_op", { op = "add", name = "Props", isGroup = true })
+  call("layer_op", { op = "add", name = "Sword", group = "Props" })
+  call("layer_op", { op = "activate", name = "Hero" })
+  local r = call("write_image", { x = 0, y = 0, width = 1, height = 1, format = "rgba", data = RED })
+  eq(r.layer, "Hero/Body", "write went into the active group")
+  eq(call("read_image", {}).data, RED, "default read is the same layer")
+  eq(call("read_image", { layer = "Props/Sword" }).data, CLEAR, "other group untouched")
+  call("layer_op", { op = "add", name = "Empty", isGroup = true })
+  call("layer_op", { op = "activate", name = "Empty" })
+  expectError(function()
+    call("write_image", { x = 0, y = 0, width = 1, height = 1, format = "rgba", data = RED })
+  end, "Active layer is a group; pass layer")
+  expectError(function() call("read_image", {}) end, "Active layer is a group; pass layer")
+end)
+
+test("duplicate with newName is one undo step, also on a background sprite", function()
+  call("create_sprite", { width = 2, height = 2 })
+  call("layer_op", { op = "add", name = "A" })
+  local r = call("layer_op", { op = "duplicate", name = "A", newName = "A2" })
+  eq(r.layer, "A2", "copy")
+  eq(layerPaths(call("get_sprite_info", {})), "Layer 1,A,A2", "after duplicate")
+  call("undo", {})
+  eq(layerPaths(call("get_sprite_info", {})), "Layer 1,A", "one undo removes copy and rename")
+
+  local bg = call("create_sprite", { width = 2, height = 2 })
+  local front = call("create_sprite", { width = 3, height = 3 })
+  call("layer_op", { sprite = bg.id, op = "duplicate", name = "Layer 1", newName = "Copy" })
+  eq(layerPaths(call("get_sprite_info", { sprite = bg.id })), "Layer 1,Copy", "background duplicate")
+  eq(call("get_sprite_info", {}).id, front.id, "user's tab stays active")
+  call("undo", { sprite = bg.id })
+  eq(layerPaths(call("get_sprite_info", { sprite = bg.id })), "Layer 1", "background undo in one step")
+end)
+
+test("merge_down merges image layers and refuses groups and the bottom layer", function()
+  call("create_sprite", { width = 2, height = 1 })
+  call("write_image", { x = 0, y = 0, width = 1, height = 1, layer = "Layer 1", format = "rgba", data = RED })
+  call("write_image", { x = 1, y = 0, width = 1, height = 1, layer = "Top", format = "rgba", data = GREEN })
+  local r = call("layer_op", { op = "merge_down", name = "Top" })
+  eq(r.layer, "Layer 1", "merged into the layer below")
+  eq(layerPaths(call("get_sprite_info", {})), "Layer 1", "source layer gone")
+  eq(call("read_image", { layer = "Layer 1" }).data, RED .. GREEN, "pixels merged")
+
+  expectError(function() call("layer_op", { op = "merge_down", name = "Layer 1" }) end, "no layer below")
+  call("layer_op", { op = "add", name = "G", isGroup = true })
+  call("layer_op", { op = "add", name = "Above" })
+  expectError(function() call("layer_op", { op = "merge_down", name = "Above" }) end, "group")
+  expectError(function() call("layer_op", { op = "merge_down", name = "G" }) end, "group")
+  eq(layerPaths(call("get_sprite_info", {})), "Layer 1,G,Above", "nothing changed")
+end)
+
+test("create_sprite rejects a bad background before opening a tab", function()
+  local before = #app.sprites
+  for _, bad in ipairs({ "yellow", "zz00zz", "fff", "ff00ff0" }) do
+    expectError(function() call("create_sprite", { width = 2, height = 2, background = bad }) end, "Invalid color")
+  end
+  eq(#app.sprites, before, "no orphan sprite tabs")
+  local info = call("create_sprite", { width = 1, height = 1, background = "#ff000080" })
+  eq(call("read_image", { sprite = info.id }).data, "ff000080", "rrggbbaa background")
+  eq(#app.sprites, before + 1, "one new sprite")
+end)
+
+test("write_image keeps cel pixels outside the canvas", function()
+  local info = call("create_sprite", { width = 4, height = 4 })
+  local sprite = U.sprite({ sprite = info.id })
+  local layer = sprite.layers[1]
+  local blue = Image(4, 4, ColorMode.RGB)
+  blue:clear(Color{ r = 0, g = 0, b = 255, a = 255 })
+  -- Columns 4 and 5 of the cel are off-canvas, like art moved partly off-screen.
+  app.transaction("setup", function() sprite:newCel(layer, 1, blue, Point(2, 0)) end)
+  call("write_image", { x = 0, y = 3, width = 1, height = 1, layer = "Layer 1", format = "rgba", data = RED })
+  local cel = layer:cel(1)
+  eq(cel.position.x, 0, "cel grows left to the write")
+  eq(cel.image.width, 6, "off-canvas columns kept")
+  eq(app.pixelColor.rgbaB(cel.image:getPixel(5, 0)), 255, "hidden pixel still blue")
+  eq(app.pixelColor.rgbaR(cel.image:getPixel(0, 3)), 255, "written pixel")
+  -- Incoming pixels outside the canvas are still ignored.
+  call("create_sprite", { width = 4, height = 1 })
+  call("write_image", { x = 3, y = 0, width = 2, height = 1, layer = "Clip", format = "rgba", data = RED .. RED })
+  local clipCel = U.requireLayer(app.sprite, "Clip"):cel(1)
+  eq(clipCel.bounds.x, 3, "clipped cel x")
+  eq(clipCel.bounds.width, 1, "nothing written past the canvas edge")
+end)
+
+test("writing one frame of linked cels leaves the other frames unchanged", function()
+  local info = call("create_sprite", { width = 2, height = 1, frames = 3 })
+  local sprite = U.sprite({ sprite = info.id })
+  call("write_image", { x = 0, y = 0, width = 1, height = 1, frame = 1, layer = "Layer 1", format = "rgba", data = RED })
+  local layer = sprite.layers[1]
+  app.range.layers = { layer }
+  app.range.frames = { sprite.frames[1], sprite.frames[2], sprite.frames[3] }
+  app.command.LinkCels()
+  eq(layer:cel(1).image.id, layer:cel(3).image.id, "cels linked")
+
+  call("write_image", { x = 1, y = 0, width = 1, height = 1, frame = 2, layer = "Layer 1", format = "rgba", data = GREEN })
+  eq(call("read_image", { frame = 2, layer = "Layer 1" }).data, RED .. GREEN, "frame 2 written")
+  eq(call("read_image", { frame = 1, layer = "Layer 1" }).data, RED .. CLEAR, "frame 1 unchanged")
+  eq(call("read_image", { frame = 3, layer = "Layer 1" }).data, RED .. CLEAR, "frame 3 unchanged")
+  eq(layer:cel(1).image.id, layer:cel(3).image.id, "frames 1 and 3 still linked")
+
+  -- Erasing a linked frame removes only that frame's cel.
+  call("write_image", { x = 0, y = 0, width = 2, height = 1, frame = 3, layer = "Layer 1", format = "rgba", data = CLEAR .. CLEAR })
+  eq(layer:cel(3), nil, "frame 3 cel removed")
+  eq(call("read_image", { frame = 1, layer = "Layer 1" }).data, RED .. CLEAR, "frame 1 still intact")
+end)
+
+test("Group/Layer paths create the layer inside the existing group", function()
+  call("create_sprite", { width = 1, height = 1 })
+  call("layer_op", { op = "add", name = "Body", isGroup = true })
+  local r = call("write_image", { x = 0, y = 0, width = 1, height = 1, layer = "Body/Outline", format = "rgba", data = RED })
+  eq(r.layer, "Body/Outline", "write result")
+  call("layer_op", { op = "add", name = "Body/Shading" })
+  local info = call("get_sprite_info", {})
+  eq(layerPaths(info), "Layer 1,Body,Body/Outline,Body/Shading", "nested, not top-level")
+  for _, l in ipairs(info.layers) do
+    if l.path == "Body/Outline" then eq(l.name, "Outline", "leaf name") end
+  end
+  expectError(function()
+    call("write_image", { x = 0, y = 0, width = 1, height = 1, layer = "Nope/Outline", format = "rgba", data = RED })
+  end, 'Group not found: "Nope"')
+  expectError(function() call("layer_op", { op = "add", name = "Layer 1/X" }) end, "Not a group")
+  eq(layerPaths(call("get_sprite_info", {})), "Layer 1,Body,Body/Outline,Body/Shading", "no stray layers")
+end)
+
 print(string.format("%d passed, %d failed", passed, failed))
 -- os.exit is disabled in Aseprite's Lua; a raised error makes the run fail instead.
 if failed > 0 then error(failed .. " test(s) failed") end
