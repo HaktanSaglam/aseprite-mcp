@@ -73,20 +73,26 @@ with your account (`claude auth login`).
 ```bash
 git clone https://github.com/HaktanSaglam/aseprite-mcp.git
 cd aseprite-mcp
-./scripts/install.sh            # Windows: powershell -File scripts/install.ps1
+./scripts/install.sh
 ```
 
-The installer builds the bridge, packages the extension and opens it in Aseprite, and can register
-the MCP server with Claude Code. Then start the bridge (or install it as a background service with
-`./scripts/install.sh --service`):
+On Windows: `powershell -ExecutionPolicy Bypass -File scripts\install.ps1`.
+
+The installer builds the bridge, packages the extension and hands it to Aseprite, and offers to
+register the MCP server with Claude Code and to run the bridge in the background at login
+(`--service`). Without the service, start the bridge yourself and keep it running:
 
 ```bash
 cd bridge && npm start
 ```
 
-In Aseprite open **Edit › FX › Aseprite MCP › AI Assistant…**. The first time, Aseprite asks whether
-the extension may open a connection: tick **Don't show this specific alert again for this script**
-and click **Allow to Open Connections**.
+In Aseprite open **Edit › FX › Aseprite MCP › AI Assistant…** (also: *Generate Sprite…*, *Pixel
+Tools…*, *Reconnect Bridge*). The first time, Aseprite asks whether the extension may open a
+connection: tick **Don't show this specific alert again for this script** and click **Allow to
+Open Connections**. The dot at the top of the window turns green once the bridge is connected.
+
+Something not working? `node bridge/bin/aseprite-mcp.js doctor` checks every piece and says what to
+fix.
 
 ## Using the assistant
 
@@ -109,7 +115,7 @@ claude mcp add --transport http --scope user aseprite http://127.0.0.1:7800/mcp
 ```
 
 See [docs/CLIENTS.md](docs/CLIENTS.md) for Codex, Cursor, VS Code, Claude Desktop, Gemini CLI and
-others, or run `npx aseprite-mcp print-config <client>`.
+others, or run `node bridge/bin/aseprite-mcp.js print-config <client>`.
 
 ## Tools
 
@@ -138,9 +144,14 @@ per frame.
 
 ## AI providers
 
+The in-Aseprite assistant is built and tested around **Claude Code**: it runs `claude -p` with
+your own Claude subscription, keeps a warm process per conversation for fast follow-ups, and sees
+a preview of your canvas with every request. Other back-ends work through the same tools but are
+less tested.
+
 | Provider | How it connects | Status |
 |---|---|---|
-| Claude Code | `claude -p` with your Claude subscription | default |
+| Claude Code | `claude -p` with your Claude subscription | default, recommended |
 | OpenAI-compatible | API key / base URL (OpenAI, OpenRouter, Ollama, LM Studio, …) | experimental |
 | Anthropic API | `ANTHROPIC_API_KEY` | experimental |
 | Codex CLI | `codex exec` with your ChatGPT login | experimental |
@@ -158,6 +169,7 @@ Configure them in `~/.aseprite-mcp/config.json` — see [bridge/src/llm/README.m
 | `ASEPRITE_MAX_PARALLEL` | `4` | parallel model runs (variations, batches) |
 | `ASEPRITE_MCP_CONFIG` | `~/.aseprite-mcp/config.json` | provider settings |
 | `CLAUDE_PATH` | `claude` | Claude Code CLI |
+| `ASEPRITE_CLAUDE_WORKDIR` | `~/.aseprite-mcp/work/claude` | empty folder the CLI runs in |
 
 ## Troubleshooting
 
