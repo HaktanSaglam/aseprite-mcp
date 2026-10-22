@@ -40,11 +40,17 @@ export const registerPaletteTools: ToolRegistrar = (server, { gateway }) => {
       }
       const list = preset ? [...getPalettePreset(preset).colors] : colors!.map((c) => formatHex(...parseHex(c)));
       const info = await gateway.getSpriteInfo();
-      await gateway.setPalette(list);
+      // Pinned, so the warnings below are about the sprite that really changed.
+      await gateway.setPalette(list, { sprite: info.id });
 
       let text = `Sprite palette set to ${list.length} colors${preset ? ` (${getPalettePreset(preset).name})` : ""}.`;
       if (info.colorMode === "indexed") {
         text += " Indexed sprite: existing pixels now show the new color at their index.";
+        if (list.length < info.paletteSize) {
+          text +=
+            ` The old palette had ${info.paletteSize} colors: pixels using index ${list.length} or higher now show ` +
+            "nothing (they keep their index; a palette that long brings them back).";
+        }
         const slot = list[info.transparentIndex];
         if (slot !== undefined && parseHex(slot)[3] > 0) {
           text +=

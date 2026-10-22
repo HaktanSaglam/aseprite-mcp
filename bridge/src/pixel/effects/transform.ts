@@ -1,5 +1,6 @@
 import type { Rect } from "../../aseprite/protocol.js";
-import { cloneImage, type RgbaImage } from "../RgbaImage.js";
+import { compose, type PixelFilter } from "../composite.js";
+import { cloneImage, createRgbaImage, type RgbaImage } from "../RgbaImage.js";
 
 export const TRANSFORM_OPS = ["flip_h", "flip_v", "rotate_90", "rotate_180", "rotate_270", "shift"] as const;
 export type TransformOp = (typeof TRANSFORM_OPS)[number];
@@ -36,7 +37,9 @@ function mapper(op: TransformOp, w: number, h: number, options: TransformOptions
     case "rotate_180":
       return (x, y) => [w - 1 - x, h - 1 - y];
     case "rotate_270":
-      return (x, y) => [ox + y, oy + (w - 1 - x)];
+      // When w - h is odd the turned art can't sit exactly centered; rounding the x offset
+      // the other way (-oy == ceil((w - h) / 2)) makes this the exact inverse of rotate_90.
+      return (x, y) => [-oy + y, oy + (w - 1 - x)];
     case "shift":
       return options.wrap ? (x, y) => [mod(x + dx, w), mod(y + dy, h)] : (x, y) => [x + dx, y + dy];
   }
@@ -73,4 +76,36 @@ export function transformImage(
     }
   }
   return out;
+}
+
+/**
+ * Moves only the selected pixels: they are lifted out (leaving a transparent hole),
+ * transformed and dropped over what lies at their new place. Unselected pixels stay
+ * put, and moved pixels may land outside the old selection outline (a flipped sword is
+ * not cut to the shape it had before). Flips and turns pivot on the selection's bounds;
+ * a shift moves freely across the canvas, except that wrap wraps inside the bounds (tiles).
+ */
+export function transformSelection(
+  image: RgbaImage,
+  op: TransformOp,
+  options: TransformOptions,
+  bounds: Rect,
+  selected: PixelFilter,
+): RgbaImage {
+  const lifted = createRgbaImage(image.width, image.height);
+  const rest = cloneImage(image);
+  const x0 = Math.max(0, bounds.x);
+  const y0 = Math.max(0, bounds.y);
+  const x1 = Math.min(image.width, bounds.x + bounds.width);
+  const y1 = Math.min(image.height, bounds.y + bounds.height);
+  for (let y = y0; y < y1; y++) {
+    for (let x = x0; x < x1; x++) {
+      if (!selected(x, y)) continue;
+      const o = (y * image.width + x) * 4;
+      lifted.data.set(image.data.subarray(o, o + 4), o);
+      rest.data.fill(0, o, o + 4);
+    }
+  }
+  const area = op === "shift" && !options.wrap ? { x: 0, y: 0, width: image.width, height: image.height } : bounds;
+  return compose(rest, transformImage(lifted, op, options, area), "over");
 }

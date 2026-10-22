@@ -1,6 +1,6 @@
 import { z } from "zod";
-import type { IPaletteGateway } from "../../aseprite/AsepriteGateway.js";
-import { resolveFrames } from "../../canvas/CanvasService.js";
+import type { IPaletteGateway, SpriteRef, WriteImageRequest } from "../../aseprite/AsepriteGateway.js";
+import { defaultLayerPath, resolveFrames } from "../../canvas/CanvasService.js";
 import { compose, type PixelFilter } from "../../pixel/composite.js";
 import { formatHex, parseHex } from "../../pixel/color.js";
 import { adjustColors, hasAdjustments } from "../../pixel/effects/adjustColors.js";
@@ -9,7 +9,17 @@ import { getPalettePreset, isPalettePresetId, PALETTE_PRESET_IDS } from "../../p
 import { binarizeAlpha, DITHER_MODES, extractPalette, mapToPalette } from "../../pixel/quantize.js";
 import type { RgbaImage } from "../../pixel/RgbaImage.js";
 import type { ToolRegistrar } from "../ToolContext.js";
-import { colorArg, describeTarget, plural, runEffect, targetArgs, textResult, toleranceArg } from "./effects.js";
+import {
+  colorArg,
+  describeTarget,
+  plural,
+  snapNote,
+  snappedColor,
+  targetArgs,
+  textResult,
+  toleranceArg,
+  writtenColor,
+} from "./effects.js";
 
 const ditherArg = z
   .enum(DITHER_MODES)
@@ -18,16 +28,19 @@ const ditherArg = z
     "'none': flat colors (cleanest pixel art); 'ordered': tidy Bayer pattern for gradients; 'floyd': smooth, noisier.",
   );
 
+const TRANSPARENT_SLOT = "#00000000";
+
 /** A palette argument: preset id, "current" (the sprite's own palette) or explicit colors. */
 async function resolvePalette(
   spec: string | string[],
   gateway: IPaletteGateway,
+  ref: SpriteRef,
 ): Promise<{ colors: string[]; label: string }> {
   if (Array.isArray(spec)) {
     return { colors: spec.map((c) => formatHex(...parseHex(c))), label: "the custom palette" };
   }
   if (spec === "current") {
-    const { colors } = await gateway.getPalette();
+    const { colors } = await gateway.getPalette(ref);
     // The transparent slot of an indexed palette is not a color anyone paints with.
     const opaque = colors.filter((c) => parseHex(c)[3] > 0).map((c) => formatHex(...parseHex(c)));
     return { colors: opaque, label: "the sprite palette" };
@@ -43,13 +56,27 @@ async function resolvePalette(
 }
 
 /**
- * Indexed sprites keep a fully transparent entry at their transparent index; without it
- * the preset color landing on that index would render as transparent and be unpaintable.
+ * The palette an indexed sprite gets: `colors` with a fully transparent entry exactly at
+ * the sprite's transparent index. Without it the color landing there would render as
+ * transparent and be unpaintable. Gaps before a high transparent index are filled with
+ * transparent entries, which the encoder never paints with.
  */
-function withTransparentSlot(colors: string[], transparentIndex: number): string[] {
-  const at = Math.max(0, Math.min(transparentIndex, colors.length));
-  return [...colors.slice(0, at), "#00000000", ...colors.slice(at)];
+function indexedPaletteWith(colors: string[], transparentIndex: number): string[] {
+  if (colors.length > 255) {
+    throw new Error(
+      `An indexed sprite keeps one of its 256 palette slots for transparency, so it can take at most 255 colors ` +
+        `(got ${colors.length}). Pass fewer colors, or switch the sprite with edit_sprite ` +
+        '{action: "color_mode", mode: "rgb"} first.',
+    );
+  }
+  const at = Math.max(0, Math.min(transparentIndex, 255));
+  const padded = [...colors];
+  while (padded.length < at) padded.push(TRANSPARENT_SLOT);
+  return [...padded.slice(0, at), TRANSPARENT_SLOT, ...padded.slice(at)];
 }
+
+// Palette and pixels are two Aseprite transactions until write_images can carry a palette.
+const TWO_STEPS = " Changing the palette and the pixels took 2 undo steps: undo with steps: 2 reverts both.";
 
 export const registerColorTools: ToolRegistrar = (server, { gateway, canvas }) => {
   server.registerTool(
@@ -68,31 +95,35 @@ export const registerColorTools: ToolRegistrar = (server, { gateway, canvas }) =
       },
     },
     async ({ colors, dither, layer, frames, selectionOnly }) => {
+      // Pinned: the palette must come from the same sprite, layer and frames the edit writes.
       const info = await gateway.getSpriteInfo();
-      const frameList = resolveFrames(frames, info);
-      const filter: PixelFilter | undefined = selectionOnly ? await canvas.selectionFilter({}) : undefined;
+      const ref = { sprite: info.id };
+      const target = {
+        layer: layer ?? defaultLayerPath(info),
+        frames: resolveFrames(frames, info),
+        selectionOnly,
+        ...ref,
+      };
+      const filter: PixelFilter | undefined = selectionOnly ? await canvas.selectionFilter(ref) : undefined;
 
       // One palette for every frame: read them all first when there is more than one.
       let palette: string[] | undefined;
-      if (frameList.length > 1) {
+      if (target.frames.length > 1) {
         const images: RgbaImage[] = [];
-        for (const frame of frameList) images.push((await gateway.readImage({ frame, layer })).image);
+        for (const frame of target.frames) {
+          images.push((await gateway.readImage({ frame, layer: target.layer, ...ref })).image);
+        }
         palette = extractPalette(images, colors, filter);
       }
-      const run = await runEffect(
-        canvas,
-        { layer, frames: frameList, selectionOnly },
-        (image) => {
-          palette ??= extractPalette([image], colors, filter);
-          return palette.length > 0 ? mapToPalette(image, palette, dither) : binarizeAlpha(image);
-        },
-        filter,
-      );
+      const run = await canvas.transform(target, (image) => {
+        palette ??= extractPalette([image], colors, filter);
+        return palette.length > 0 ? mapToPalette(image, palette, dither) : binarizeAlpha(image);
+      });
       const where = describeTarget(layer, run.frames);
       if (!palette || palette.length === 0) return textResult(`Nothing to reduce: ${where} has no opaque pixels.`);
       return textResult(
         `Reduced to ${plural(palette.length, "color")} (dither ${dither}) on ${where}: ` +
-          `${plural(run.changed, "pixel")} changed. Palette: ${palette.join(" ")}`,
+          `${plural(run.changed, "pixel")} changed. Palette: ${palette.join(" ")}${snapNote(run)}`,
       );
     },
   );
@@ -104,8 +135,9 @@ export const registerColorTools: ToolRegistrar = (server, { gateway, canvas }) =
       description:
         "Redraw the art using only the colors of a palette (nearest perceptual match): a preset id, 'current' " +
         "(the sprite's palette) or a list of colors. setSpritePalette also makes it the sprite's palette, which " +
-        "indexed sprites need (their pixels can only use sprite-palette colors). Semi-transparent pixels snap to " +
-        "opaque/transparent. One undo step (two with setSpritePalette).",
+        "indexed sprites need (their pixels can only use sprite-palette colors; indexed sprites take at most 255 " +
+        "colors, one slot stays transparent). Semi-transparent pixels snap to opaque/transparent. One undo step " +
+        "(two with setSpritePalette).",
       inputSchema: {
         palette: z
           .union([z.string(), z.array(colorArg).min(1).max(256)])
@@ -116,25 +148,30 @@ export const registerColorTools: ToolRegistrar = (server, { gateway, canvas }) =
       },
     },
     async ({ palette: spec, dither, setSpritePalette, layer, frames, selectionOnly }) => {
-      const { colors, label } = await resolvePalette(spec, gateway);
-      if (colors.length === 0) throw new Error(`${label} has no opaque colors to map to`);
       const info = await gateway.getSpriteInfo();
+      const ref = { sprite: info.id };
+      const { colors, label } = await resolvePalette(spec, gateway, ref);
+      if (colors.length === 0) throw new Error(`${label} has no opaque colors to map to`);
       const frameList = resolveFrames(frames, info);
+      const targetLayer = layer ?? defaultLayerPath(info);
       const updatePalette = setSpritePalette && spec !== "current";
 
       if (updatePalette && info.colorMode === "indexed") {
+        // Built (and validated) before anything changes, so a refusal leaves the sprite as it was.
+        const spritePalette = indexedPaletteWith(colors, info.transparentIndex);
         // Indexed pixels store palette indexes: remap while the old palette still decodes
         // them, swap the palette, then write (encoded against the new palette).
-        const filter = selectionOnly ? await canvas.selectionFilter({}) : undefined;
-        const writes = [];
+        const filter = selectionOnly ? await canvas.selectionFilter(ref) : undefined;
+        const writes: WriteImageRequest[] = [];
         for (const frame of frameList) {
-          const { image } = await gateway.readImage({ frame, layer });
+          const { image } = await gateway.readImage({ frame, layer: targetLayer, ...ref });
           const mapped = mapToPalette(image, colors, dither);
           const result = filter ? compose(image, mapped, "replace", { x: 0, y: 0 }, filter) : mapped;
-          writes.push({ x: 0, y: 0, frame, layer, image: result });
+          // Keeps the read indexes, so pixels whose index still shows their color stay as they are.
+          writes.push({ x: 0, y: 0, frame, layer: targetLayer, image: { ...result, source: image.source } });
         }
-        await gateway.setPalette(withTransparentSlot(colors, info.transparentIndex));
-        await gateway.writeImages(writes);
+        await gateway.setPalette(spritePalette, ref);
+        await gateway.writeImages(writes, ref);
         const others = info.layers.filter((l) => !l.isGroup).length > 1 || frameList.length < info.frames.length;
         return textResult(
           `Applied ${label} (${colors.length} colors, dither ${dither}) to ${describeTarget(layer, frameList)} ` +
@@ -142,14 +179,15 @@ export const registerColorTools: ToolRegistrar = (server, { gateway, canvas }) =
             (others
               ? " Indexed sprite: other layers/frames keep their palette indexes, so they now show the new colors " +
                 "by index; apply the palette to them too (frames: \"all\", each layer) if they look wrong."
-              : ""),
+              : "") +
+            TWO_STEPS,
         );
       }
 
-      const run = await runEffect(canvas, { layer, frames: frameList, selectionOnly }, (image) =>
+      const run = await canvas.transform({ layer: targetLayer, frames: frameList, selectionOnly, ...ref }, (image) =>
         mapToPalette(image, colors, dither),
       );
-      if (updatePalette) await gateway.setPalette(colors);
+      if (updatePalette) await gateway.setPalette(colors, ref);
       const snapped =
         info.colorMode === "indexed" && spec !== "current"
           ? " Indexed sprite: pixels were snapped to the nearest sprite-palette colors; pass setSpritePalette: true " +
@@ -157,7 +195,8 @@ export const registerColorTools: ToolRegistrar = (server, { gateway, canvas }) =
           : "";
       return textResult(
         `Applied ${label} (${colors.length} colors, dither ${dither}) to ${describeTarget(layer, run.frames)}: ` +
-          `${plural(run.changed, "pixel")} changed${updatePalette ? "; sprite palette replaced" : ""}.${snapped}`,
+          `${plural(run.changed, "pixel")} changed${updatePalette ? "; sprite palette replaced" : ""}.${snapped}` +
+          (updatePalette && run.changed > 0 ? TWO_STEPS : ""),
       );
     },
   );
@@ -173,7 +212,12 @@ export const registerColorTools: ToolRegistrar = (server, { gateway, canvas }) =
         "grayscale; alpha is kept. One undo step.",
       inputSchema: {
         hue: z.number().min(-180).max(180).optional().describe("Degrees around the color wheel."),
-        saturation: z.number().min(-100).max(100).optional().describe("-100 = gray, +100 = fully saturated."),
+        saturation: z
+          .number()
+          .min(-100)
+          .max(100)
+          .optional()
+          .describe("Scales saturation: -100 = gray, +100 = twice as saturated. Grays stay gray."),
         lightness: z.number().min(-100).max(100).optional().describe("-100 = black, +100 = white."),
         brightness: z.number().min(-100).max(100).optional().describe("Adds the same amount to every channel."),
         contrast: z.number().min(-100).max(100).optional().describe("Negative flattens toward gray, positive punches."),
@@ -188,7 +232,7 @@ export const registerColorTools: ToolRegistrar = (server, { gateway, canvas }) =
           "Nothing to adjust: pass at least one of hue, saturation, lightness, brightness, contrast, invert, grayscale",
         );
       }
-      const run = await runEffect(canvas, { layer, frames, selectionOnly }, (image) =>
+      const run = await canvas.transform({ layer, frames, selectionOnly }, (image) =>
         adjustColors(image, adjustments).image,
       );
       const applied = Object.entries(adjustments)
@@ -196,7 +240,8 @@ export const registerColorTools: ToolRegistrar = (server, { gateway, canvas }) =
         .map(([k, v]) => (v === true ? k : `${k} ${(v as number) > 0 ? "+" : ""}${v}`))
         .join(", ");
       return textResult(
-        `Adjusted ${applied} on ${describeTarget(layer, run.frames)}: ${plural(run.changed, "pixel")} changed.`,
+        `Adjusted ${applied} on ${describeTarget(layer, run.frames)}: ${plural(run.changed, "pixel")} changed.` +
+          snapNote(run),
       );
     },
   );
@@ -219,18 +264,35 @@ export const registerColorTools: ToolRegistrar = (server, { gateway, canvas }) =
     async ({ from, to, tolerance, layer, frames, selectionOnly }) => {
       const fromRgba = parseHex(from);
       const toRgba = parseHex(to);
-      const run = await runEffect(canvas, { layer, frames, selectionOnly }, (image) =>
-        replaceColor(image, fromRgba, toRgba, tolerance).image,
-      );
+      let matched = 0;
+      const run = await canvas.transform({ layer, frames, selectionOnly }, (image) => {
+        const result = replaceColor(image, fromRgba, toRgba, tolerance);
+        matched += result.replaced;
+        return result.image;
+      });
       const where = describeTarget(layer, run.frames);
       if (run.changed === 0) {
+        const stored = snappedColor(run, to);
+        const snappedBack =
+          run.storage?.format === "indexed" &&
+          matched > 0 &&
+          stored !== undefined &&
+          stored === (snappedColor(run, from) ?? formatHex(...fromRgba));
+        if (snappedBack) {
+          return textResult(
+            `Nothing changed on ${where}: ${to} is not in the indexed palette, and its nearest palette color is ` +
+              `${stored}, which the matching pixels already have. Add ${to} with set_palette, or switch the ` +
+              'sprite with edit_sprite {action: "color_mode", mode: "rgb"}, then replace again.',
+          );
+        }
         return textResult(
           `No pixels matched ${from} (tolerance ${tolerance}) on ${where}. Check the exact color with read_pixels ` +
             "or analyze_sprite, or raise tolerance.",
         );
       }
       return textResult(
-        `Replaced ${plural(run.changed, "pixel")} of ${from} (tolerance ${tolerance}) with ${to} on ${where}.`,
+        `Replaced ${plural(run.changed, "pixel")} of ${from} (tolerance ${tolerance}) with ${writtenColor(run, to)} ` +
+          `on ${where}.`,
       );
     },
   );

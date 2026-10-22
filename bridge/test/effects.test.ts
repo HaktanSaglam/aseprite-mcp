@@ -6,7 +6,7 @@ import { cleanupPixels, findNoise, findOrphans } from "../src/pixel/effects/clea
 import { dropShadow } from "../src/pixel/effects/dropShadow.js";
 import { outline } from "../src/pixel/effects/outline.js";
 import { replaceColor } from "../src/pixel/effects/replaceColor.js";
-import { transformImage } from "../src/pixel/effects/transform.js";
+import { transformImage, transformSelection } from "../src/pixel/effects/transform.js";
 import { createRgbaImage, type RgbaImage } from "../src/pixel/RgbaImage.js";
 
 // Tiny grid DSL: one character per pixel, mapped through a legend; "." is transparent.
@@ -216,6 +216,17 @@ describe("adjustColors", () => {
     expect(adjustColor(200, 100, 100, { lightness: -100 })).toEqual([0, 0, 0]);
   });
 
+  it("more saturation leaves grays gray and scales colors proportionally", () => {
+    expect(adjustColor(128, 128, 128, { saturation: 30 })).toEqual([128, 128, 128]);
+    expect(adjustColor(160, 160, 160, { saturation: 100 })).toEqual([160, 160, 160]);
+    // A barely tinted gray stays a near-gray instead of jumping to a vivid red.
+    const [r, g, b] = adjustColor(130, 128, 128, { saturation: 50 });
+    expect(r - Math.min(g, b)).toBeLessThanOrEqual(4);
+    // Real colors still gain saturation: a muted red gets redder.
+    const [mr, mg] = adjustColor(180, 120, 120, { saturation: 50 });
+    expect(mr - mg).toBeGreaterThan(60);
+  });
+
   it("brightness offsets, contrast spreads around mid gray", () => {
     expect(adjustColor(100, 100, 100, { brightness: 20 })).toEqual([151, 151, 151]);
     const [lo] = adjustColor(100, 100, 100, { contrast: 50 });
@@ -293,6 +304,44 @@ describe("transformImage", () => {
   it("transforms only inside a region", () => {
     const wide = grid(["RGKK", "KKKK"]);
     expect(rows(transformImage(wide, "flip_h", {}, { x: 0, y: 0, width: 2, height: 1 }))).toEqual(["GRKK", "KKKK"]);
+  });
+
+  it("rotate_270 exactly undoes rotate_90 on canvases where width - height is odd", () => {
+    // Content inside the centered square survives both turns, so it must come back in place.
+    const wide = grid(["..RRG", "..RGG", "..RRG", "....."]);
+    expect(rows(transformImage(transformImage(wide, "rotate_90"), "rotate_270"))).toEqual(rows(wide));
+    const tall = grid(["....", ".RG.", ".GB.", ".BR.", "...."]);
+    expect(rows(transformImage(transformImage(tall, "rotate_90"), "rotate_270"))).toEqual(rows(tall));
+    expect(rows(transformImage(transformImage(tall, "rotate_270"), "rotate_90"))).toEqual(rows(tall));
+  });
+});
+
+describe("transformSelection", () => {
+  // A body (R) with a sword (G) pointing right; the selection is the opaque pixels.
+  const sprite = grid([".RR.....", ".RRGGGG.", ".RR....."]);
+  const opaque = (x: number, y: number) => sprite.data[(y * sprite.width + x) * 4 + 3] > 0;
+  const bounds = { x: 1, y: 0, width: 6, height: 3 };
+
+  it("moves the selected pixels themselves, beyond the old selection outline", () => {
+    expect(rows(transformSelection(sprite, "flip_h", {}, bounds, opaque))).toEqual([
+      ".....RR.",
+      ".GGGGRR.",
+      ".....RR.",
+    ]);
+  });
+
+  it("leaves unselected pixels in the bounds where they are", () => {
+    const swordOnly = (x: number, y: number) => y === 1 && x >= 3;
+    const swordBounds = { x: 3, y: 1, width: 4, height: 1 };
+    const art = grid([".RR.....", ".RRGGGB.", ".RR....."]);
+    expect(rows(transformSelection(art, "shift", { dx: 1 }, { ...swordBounds, width: 5 }, swordOnly))).toEqual([
+      ".RR.....",
+      ".RR.GGGB",
+      ".RR.....",
+    ]);
+    // Only both ends are selected: they swap, the two pixels between them stay.
+    const ends = (x: number, y: number) => y === 1 && (x === 3 || x === 6);
+    expect(rows(transformSelection(art, "flip_h", {}, swordBounds, ends))).toEqual([".RR.....", ".RRBGGG.", ".RR....."]);
   });
 });
 

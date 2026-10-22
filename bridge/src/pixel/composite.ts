@@ -54,6 +54,24 @@ function blendOver(dst: Uint8Array, o: number, r: number, g: number, b: number, 
   dst[o + 3] = Math.round(outA * 255);
 }
 
+/**
+ * How many pixels look different in two same-sized images. Fully transparent pixels
+ * count as equal whatever RGB they carry: nobody can see the difference.
+ */
+export function countChangedPixels(before: RgbaImage, after: RgbaImage): number {
+  if (before.width !== after.width || before.height !== after.height) {
+    throw new Error("countChangedPixels: images must have the same size");
+  }
+  const a = before.data;
+  const b = after.data;
+  let changed = 0;
+  for (let o = 0; o < a.length; o += 4) {
+    if (a[o + 3] === 0 && b[o + 3] === 0) continue;
+    if (a[o] !== b[o] || a[o + 1] !== b[o + 1] || a[o + 2] !== b[o + 2] || a[o + 3] !== b[o + 3]) changed++;
+  }
+  return changed;
+}
+
 /** Turns a 0/1 mask over `rect` into a canvas-coordinate predicate. */
 export function maskFilter(
   rect: { x: number; y: number; width: number; height: number },
