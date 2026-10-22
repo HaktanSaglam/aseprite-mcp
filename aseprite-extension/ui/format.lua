@@ -37,12 +37,12 @@ function F.done(stats)
   return table.concat(parts, SEP)
 end
 
--- activity: current tool name, or a progress {done, total, label?}.
+-- activity: current tool name, or a progress {done, total, label?}. The progress label
+-- names the job that finished last, so the header (one short line) leaves it out.
 function F.working(elapsedSeconds, tool, progress)
   local parts = { "Working " .. F.duration(elapsedSeconds) }
   if progress and (progress.total or 0) > 0 then
-    local label = (progress.label and progress.label ~= "") and (progress.label .. " ") or ""
-    parts[#parts + 1] = string.format("%s%d/%d", label, math.floor(progress.done or 0), math.floor(progress.total))
+    parts[#parts + 1] = string.format("%d/%d done", math.floor(progress.done or 0), math.floor(progress.total))
   end
   if tool and tool ~= "" then parts[#parts + 1] = tool end
   return table.concat(parts, SEP)

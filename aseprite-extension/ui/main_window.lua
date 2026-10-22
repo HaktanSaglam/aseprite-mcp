@@ -28,6 +28,7 @@ return function(ctx)
   local LogView = load("ui/log_view.lua")(textRender, LL)
   local Header = load("ui/header_view.lua")(textRender, W)
   local Panels = load("ui/panels.lua")(T, F, Header)
+  local Bounds = load("ui/bounds.lua")
 
   local TABS = {
     { id = "chat", text = "Chat", build = load("ui/tabs/chat_tab.lua") },
@@ -54,7 +55,8 @@ return function(ctx)
     "genGenerate", "genDir4", "genDir8", "genBatchRun", "animRun",
   }
 
-  local NOT_RUNNING = "The bridge is not running. Start it with: npm start (in the bridge folder)."
+  -- The Tools tab's status label is one short line; the chat log gets the full version.
+  local OFFLINE_SHORT = "Bridge offline - start it with: npm start"
 
   local M = {}
 
@@ -65,16 +67,55 @@ return function(ctx)
     function() return S.get(prefs, "showTools") end)
   local phase = 0
   local dlg, form = nil, nil
+  local tabbed = false
   local timer = nil
   local siteListener = nil
   local shownLayer, shownSprite, shownToolText = nil, nil, nil
   local lastError = nil
+  local rebuildPending = false
+  -- The message being typed. Not a setting (it shouldn't outlive Aseprite), but it must
+  -- survive closing the window and the rebuild an older Aseprite needs after bridge_info.
+  local draft = ""
+
+  -- Says what to do, and on which port: a bridge started with --ws-port elsewhere is
+  -- as unreachable as one that isn't running.
+  local function offlineMessage()
+    return string.format(
+      "Can't reach the bridge on port %d. Start it with: npm start (in the bridge folder); " ..
+      "the window reconnects by itself. Still offline? Run: node bridge/bin/aseprite-mcp.js doctor",
+      S.get(prefs, "port"))
+  end
+
+  -- connection.send only fails when there is no socket object, and that object lives on
+  -- while it retries a lost connection. Check the status first: a message "sent" while
+  -- offline would otherwise spin in "Sending..." until SEND_TIMEOUT.
+  local function send(payload)
+    if connection.status ~= "connected" then return false end
+    return connection.send(payload) and true or false
+  end
 
   local function validTab(tab)
     for _, t in ipairs(TABS) do
       if t.id == tab then return true end
     end
     return false
+  end
+
+  -- The tab the user sees: the dialog's own answer when it gives one ("tab_chat", or the
+  -- tab's text), else the last tab we were told about. Without tabs every section is
+  -- visible, which counts as the Chat tab.
+  local function currentTab()
+    if not dlg then return nil end
+    if not tabbed then return "chat" end
+    local ok, raw = pcall(function() return dlg.data.tabs end)
+    if ok and type(raw) == "string" then
+      local id = raw:gsub("^tab_", "")
+      if validTab(id) then return id end
+      for _, t in ipairs(TABS) do
+        if t.text == raw then return t.id end
+      end
+    end
+    return S.get(prefs, "tab")
   end
 
   -- Errors inside our own UI callbacks end up here instead of Aseprite's console.
@@ -190,7 +231,8 @@ return function(ctx)
     if timer and timer.isRunning then timer:stop() end
   end
 
-  -- Copies the session state into widgets; called after anything changed it.
+  -- Copies the session state into widgets; called after anything changed it, and by the
+  -- spinner several times a second (Form only sends actual changes to the dialog).
   local function sync()
     if form then
       for _, id in ipairs(RUN_BUTTONS) do form:enable(id, not session.busy) end
@@ -217,6 +259,15 @@ return function(ctx)
   -- Aseprite versions that can't replace combobox options get a fresh dialog instead.
   local scheduleRebuild
 
+  -- A box with only "Default" in it offers no choice: grey it out like the effort box.
+  local function enableChoices(provider)
+    local hasModels, hasEfforts = #provider.models > 0, #provider.efforts > 0
+    form:enable("settingsModel", hasModels)
+    form:enable("chatModel", hasModels)
+    form:enable("settingsEffort", hasEfforts)
+    form:enable("chatEffort", hasEfforts)
+  end
+
   -- Refills the provider/model/effort boxes after the provider list or choice changed.
   local function refreshAI()
     if not form then return end
@@ -227,9 +278,7 @@ return function(ctx)
     ok = form:setOptions("chatModel", models, sel.model) and ok
     ok = form:setOptions("settingsEffort", efforts, sel.effort) and ok
     ok = form:setOptions("chatEffort", efforts, sel.effort) and ok
-    local hasEfforts = #sel.provider.efforts > 0
-    form:enable("settingsEffort", hasEfforts)
-    form:enable("chatEffort", hasEfforts)
+    enableChoices(sel.provider)
     form:setText("providerInfo", providerInfo())
     if not ok then scheduleRebuild() end
     repaint()
@@ -271,11 +320,16 @@ return function(ctx)
     sync()
   end
 
+  -- Focus only moves while the Chat tab is shown: focusing the hidden box from another
+  -- tab would send the user's next keystrokes into it.
   local function focusChat(clear)
     if not dlg then return end
     form:quietly(function()
-      if clear then dlg:modify{ id = "chatInput", text = "" } end
-      dlg:modify{ id = "chatInput", focus = true }
+      if clear then
+        dlg:modify{ id = "chatInput", text = "" }
+        draft = ""
+      end
+      if currentTab() == "chat" then dlg:modify{ id = "chatInput", focus = true } end
     end)
   end
 
@@ -292,8 +346,8 @@ return function(ctx)
       fail(err)
       return nil
     end
-    if not connection.send(payload) then
-      fail(NOT_RUNNING)
+    if not send(payload) then
+      fail(offlineMessage())
       return nil
     end
     lastError = nil
@@ -310,8 +364,12 @@ return function(ctx)
     logView:wheel(ev)
     repaint()
   end
+  handlers.clickLog = function(ev)
+    if logView:click(ev) then repaint() end
+  end
   handlers.providerInfo = providerInfo
   handlers.helpLines = function() return Panels.HELP end
+  handlers.draft = function() return draft end
 
   handlers.providerOptions = function() return P.providerOptions(providers) end
   handlers.modelOptions = function() return P.modelOptions(resolvedAI().provider) end
@@ -325,9 +383,12 @@ return function(ctx)
   end
 
   handlers.sendChat = function()
+    -- Send is the dialog's Enter target on every tab: Enter pressed in Generate's Prompt
+    -- must not send whatever was left in the hidden message box.
+    if currentTab() ~= "chat" then return end
     local text = form:value("chatInput") or ""
-    -- Send is the Enter target, and Enter also arrives from outside the window: with
-    -- nothing typed there is nothing to say, so stay quiet.
+    -- Enter also arrives from outside the window: with nothing typed there is nothing
+    -- to say, so stay quiet.
     if not text:find("%S") then return focusChat(false) end
     local sent = startRun(function(s, ai, c) return R.chat(text, s, ai, c) end)
     focusChat(sent ~= nil)
@@ -350,28 +411,33 @@ return function(ctx)
     startRun(function(s, ai, c) return R.directions(n, s, ai, c) end)
   end
 
+  -- A second Stop while the bridge hasn't confirmed the first ends the run here.
   handlers.stop = function()
     if not session.busy then return end
-    session:stop(connection.send({ event = "chat_cancel" }))
+    session:stop(send({ event = "chat_cancel" }))
+    logView:toBottom()
+    focusChat(false)
     sync()
   end
 
   handlers.newChat = function()
-    session:newChat(connection.send({ event = "chat_reset" }))
+    session:newChat(send({ event = "chat_reset" }))
     logView:toBottom()
     lastError = nil
     focusChat(false)
     sync()
   end
 
+  -- Tools are sent even during an AI run: the bridge decides whether that is safe and
+  -- answers with a tool_result either way, which the status line and the log show.
   handlers.tool = function(key)
     form:pull()
     local requestId = session:nextRequestId()
     local payload, err = R.tool(key, requestId, S.snapshot(prefs), spriteContext())
     if not payload then
       session:toolStatus(err, "error", false)
-    elseif not connection.send(payload) then
-      session:toolStatus(NOT_RUNNING, "error", false)
+    elseif not send(payload) then
+      session:toolStatus(OFFLINE_SHORT, "error", false)
     else
       session:toolSent(requestId, R.TOOLS[key].label)
     end
@@ -503,32 +569,33 @@ return function(ctx)
     S.set(prefs, "ui_h", b.height)
   end
 
-  -- The saved position is only reused while it still overlaps the main window (the
-  -- user may have changed monitors), and never smaller than the dialog's content.
+  -- The saved place, fitted into the main window (see ui/bounds.lua); nil lets Aseprite
+  -- place the window itself.
   local function initialBounds(d)
-    local x, y, w, h = S.get(prefs, "ui_x"), S.get(prefs, "ui_y"), S.get(prefs, "ui_w"), S.get(prefs, "ui_h")
-    if not (x and y and w and h) then return nil end
+    local okHint, hint = pcall(function() return { width = d.sizeHint.width, height = d.sizeHint.height } end)
     local ok, rect = pcall(function()
-      local hint = d.sizeHint
-      w, h = math.max(w, hint.width), math.max(h, hint.height)
-      local mw, mh = app.window.width, app.window.height
-      if x + w < 40 or x > mw - 40 or y < 0 or y > mh - 40 then return nil end
-      -- A height saved by an older, taller layout (or on a bigger screen) must not push
-      -- the bottom rows off the main window: shrink it, then move up if still needed.
-      h = math.min(h, math.max(hint.height, mh - y))
-      if y + h > mh then y = math.max(0, mh - h) end
-      return Rectangle(x, y, w, h)
+      local fit = Bounds.fit(
+        { x = S.get(prefs, "ui_x"), y = S.get(prefs, "ui_y"), width = S.get(prefs, "ui_w"), height = S.get(prefs, "ui_h") },
+        okHint and hint or nil,
+        { width = app.window.width, height = app.window.height })
+      return fit and Rectangle(fit.x, fit.y, fit.width, fit.height) or nil
     end)
     return ok and rect or nil
   end
 
+  -- Forgets the dialog before anything that could fail: while dlg is set, open() only
+  -- switches tabs, so a half-closed window could never be opened again.
   local function onClose(d)
     if dlg ~= d then return end
-    if form then pcall(function() form:pull() end) end
-    pcall(saveBounds, d)
-    stopListeners()
-    stopTimer()
+    local f = form
     dlg, form = nil, nil
+    if f then
+      pcall(function() f:pull() end)
+      pcall(function() draft = f:value("chatInput") or "" end)
+    end
+    pcall(saveBounds, d)
+    pcall(stopListeners)
+    pcall(stopTimer)
   end
 
   local function onTabChange(ev)
@@ -552,7 +619,7 @@ return function(ctx)
       title = "Aseprite MCP",
       resizeable = true,
       autofit = 0,
-      onclose = function() onClose(d) end,
+      onclose = function() pcall(onClose, d) end,
     }
     if not d then return nil end
     dlg, form = d, Form.new(d, prefs, reportError)
@@ -565,10 +632,10 @@ return function(ctx)
     form:newrow()
     form:canvas{
       id = "log", width = 340, height = LOG_HEIGHT, hexpand = true, vexpand = true,
-      onpaint = handlers.paintLog, onwheel = handlers.wheelLog,
+      onpaint = handlers.paintLog, onwheel = handlers.wheelLog, onmousedown = handlers.clickLog,
     }
     form:newrow()
-    local tabbed = hasTabs(d)
+    tabbed = hasTabs(d)
     for _, tab in ipairs(TABS) do
       -- Without tab support (Aseprite < 1.3) the sections are stacked instead.
       if tabbed then d:tab{ id = "tab_" .. tab.id, text = tab.text } else form:separator(tab.text) end
@@ -603,23 +670,26 @@ return function(ctx)
     if not d then return end
     d:show{ wait = false, bounds = initialBounds(d) }
     startListeners()
-    local hasEfforts = #resolvedAI().provider.efforts > 0
-    form:enable("settingsEffort", hasEfforts)
-    form:enable("chatEffort", hasEfforts)
-    -- Requests may have timed out while the window was closed.
+    enableChoices(resolvedAI().provider)
+    -- Brings a window reopened mid-run up to date (Stop enabled, spinner running) and
+    -- expires requests that timed out while it was closed.
     pcall(tick)
-    if S.get(prefs, "tab") == "chat" then focusChat(false) end
+    focusChat(false)
   end
 
   local function rebuild()
+    rebuildPending = false
     if not dlg then return end
     local tab = S.get(prefs, "tab")
     dlg:close()
     M.open(tab)
   end
 
-  -- Deferred so the dialog isn't closed from inside one of its own callbacks.
+  -- Deferred so the dialog isn't closed from inside one of its own callbacks. Two
+  -- bridge_info messages in a row still rebuild once.
   scheduleRebuild = function()
+    if rebuildPending then return end
+    rebuildPending = true
     local ok = pcall(function()
       local t
       t = Timer{ interval = 0.05, ontick = function()

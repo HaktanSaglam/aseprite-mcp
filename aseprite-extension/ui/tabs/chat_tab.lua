@@ -6,11 +6,12 @@ return function(form, ui)
   -- focus = true makes Send the Enter target for the entry. It is the window's only
   -- such button: Enter keys nobody uses (e.g. pressed in the canvas) are offered to
   -- every open window, and a stray Enter must never start a paid generation. Send
-  -- ignores Enter while the message box is empty.
+  -- ignores Enter while the message box is empty or another tab is shown.
   -- The entry itself gets no focus = true: Aseprite would focus it even while another
   -- tab is shown, and keys typed there would land in a hidden box. The window focuses
   -- it whenever the Chat tab is shown instead.
-  form:entry{ id = "chatInput", placeholder = "Ask the AI to draw or edit... (Enter sends)" }
+  -- text: what was typed before the window was closed or rebuilt.
+  form:entry{ id = "chatInput", text = ui.draft(), placeholder = "Ask the AI to draw or edit... (Enter sends)" }
   form:button{ id = "chatSend", text = "Send", focus = true, onclick = ui.sendChat }
   form:button{ id = "chatStop", text = "Stop", enabled = false, onclick = ui.stop }
   form:button{ id = "chatNew", text = "New chat", onclick = ui.newChat }

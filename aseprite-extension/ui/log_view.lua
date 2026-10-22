@@ -21,12 +21,35 @@ return function(textRender, LL)
   }
 
   function V.new(log)
-    return setmetatable({ log = log, scroll = 0, lastTotal = nil }, V)
+    return setmetatable({ log = log, scroll = 0, lastTotal = nil, layout = nil, moreRect = nil }, V)
   end
 
   function V:toBottom()
     self.scroll = 0
     self.lastTotal = nil
+  end
+
+  -- The spinner repaints the dialog several times a second while the log rarely
+  -- changes, so the layout is kept until the log, the width or the font changes.
+  function V:blocks(messages, width, measure, lineHeight)
+    local c = self.layout
+    if not (c and c.version == self.log.version and c.width == width and c.lineHeight == lineHeight) then
+      local blocks, total = LL.layout(messages, width, measure, lineHeight)
+      c = { version = self.log.version, width = width, lineHeight = lineHeight, blocks = blocks, total = total }
+      self.layout = c
+    end
+    return c.blocks, c.total
+  end
+
+  -- A click on the "more below" hint jumps to the newest message. Returns true when the
+  -- click hit it (the caller repaints).
+  function V:click(ev)
+    local r = self.moreRect
+    local x, y = tonumber(ev and ev.x), tonumber(ev and ev.y)
+    if not (r and x and y) then return false end
+    if x < r.x or x > r.x + r.w or y < r.y or y > r.y + r.h then return false end
+    self:toBottom()
+    return true
   end
 
   -- Trackpads report fractional deltas, but drawing needs whole pixels: GraphicsContext
@@ -75,6 +98,7 @@ return function(textRender, LL)
     gc:fillRect(Rectangle(x, y, SCROLLBAR, thumbH))
   end
 
+  -- Returns the hint's rectangle so a click on it can be recognized.
   local function drawMoreBelow(gc, colors, lineHeight)
     local text = "v more below"
     local w = textRender.measure(gc, text) + 8
@@ -86,6 +110,7 @@ return function(textRender, LL)
     gc:fill()
     gc.color = colors.bg
     textRender.draw(gc, text, x + 4, y + 1)
+    return { x = x, y = y, w = w, h = lineHeight + 2 }
   end
 
   -- colors: Color objects keyed like ui/theme.lua's palette.
@@ -98,6 +123,7 @@ return function(textRender, LL)
 
     local lineHeight = textRender.lineHeight(gc) + LINE_GAP
     local messages = self.log.messages
+    self.moreRect = nil
     if #messages == 0 then
       self.scroll, self.lastTotal = 0, nil
       return drawEmpty(gc, colors, lineHeight)
@@ -105,7 +131,7 @@ return function(textRender, LL)
 
     local function measure(s) return textRender.measure(gc, s) end
     local contentWidth = width - PAD * 2 - SCROLLBAR - 2
-    local blocks, total = LL.layout(messages, contentWidth, measure, lineHeight)
+    local blocks, total = self:blocks(messages, contentWidth, measure, lineHeight)
     local visible = height - PAD * 2
 
     if self.lastTotal ~= nil and total ~= self.lastTotal then
@@ -154,7 +180,7 @@ return function(textRender, LL)
     end
 
     drawScrollbar(gc, colors, total, visible, self.scroll)
-    if self.scroll > 0 then drawMoreBelow(gc, colors, lineHeight) end
+    if self.scroll > 0 then self.moreRect = drawMoreBelow(gc, colors, lineHeight) end
   end
 
   return V

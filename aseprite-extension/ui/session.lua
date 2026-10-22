@@ -12,6 +12,9 @@ return function(F)
   -- bridge can't leave the window stuck in "Working".
   Session.SEND_TIMEOUT = 20
   Session.TOOL_TIMEOUT = 45
+  -- After Stop, how long to wait for the bridge to confirm before ending the run here.
+  -- Stopping a CLI takes a moment; a bridge that never confirms must not trap the user.
+  Session.STOP_TIMEOUT = 8
 
   local function str(v)
     if v == nil then return nil end
@@ -31,6 +34,7 @@ return function(F)
       progress = nil, -- {done, total, label?} of parallel jobs
       outcome = nil, -- "done" | "error" | "timeout" | "lost" once the run reported its end
       stopping = false,
+      stopDeadline = nil, -- clock() by which the bridge should have confirmed a Stop
       note = nil, -- {text, kind}: the latest result, for the header while idle
       toolText = nil, -- latest instant-tool status line
       pending = {}, -- requestId -> {label, sentAt}
@@ -50,7 +54,8 @@ return function(F)
   function Session:setBusy(busy)
     local now = self.clock()
     if busy and not self.busy then
-      self.since, self.tool, self.progress, self.outcome, self.stopping = now, nil, nil, nil, false
+      self.since, self.tool, self.progress, self.outcome = now, nil, nil, nil
+      self.stopping, self.stopDeadline = false, nil
     end
     if not busy and self.busy then
       -- Older bridges send no "done": still say how the run ended.
@@ -59,13 +64,15 @@ return function(F)
         self:setNote(verb .. F.duration(now - self.since), "dim")
       end
       self.tool, self.progress = nil, nil
+      self.log:endProgress()
     end
-    if not busy then self.awaiting = nil end
+    if not busy then self.awaiting, self.stopDeadline = nil, nil end
     self.busy = busy
   end
 
   -- A chat_send went out: busy right away, confirmed later by the bridge's busy event.
   function Session:sent(echo)
+    self.log:endProgress()
     self.log:add("user", echo)
     self.note = nil
     self.awaiting = self.clock()
@@ -116,22 +123,43 @@ return function(F)
     return true
   end
 
-  -- Returns true when the caller must end the run itself (cancel couldn't be sent, or
-  -- the bridge never confirmed the run, so no "busy = false" will come).
+  -- The bridge was asked to cancel the run (Stop, or New chat during a run): wait for
+  -- its "busy = false", but only until STOP_TIMEOUT.
+  function Session:awaitStop()
+    self.stopping = true
+    self.stopDeadline = self.clock() + Session.STOP_TIMEOUT
+  end
+
+  -- Returns true when the run ended here rather than by the bridge's confirmation:
+  -- the cancel couldn't be sent, or Stop was pressed again while already stopping.
+  -- An unconfirmed run (still "Sending...") waits too: the bridge answers a chat_send
+  -- with busy = true even when a chat_cancel follows it, and ending it here first made
+  -- the buttons flicker back to busy.
   function Session:stop(cancelSent)
     if not self.busy then return false end
-    self.stopping = true
-    if not cancelSent or self.awaiting then
+    if not cancelSent or self.stopDeadline then
+      self.stopping = true
+      self.log:add("status", "Stopped.")
       self:setBusy(false)
       return true
     end
+    self:awaitStop()
     self.log:add("status", "Stopping...")
     return false
   end
 
+  -- chat_reset also cancels a run in progress; resetSent = false means it never left.
   function Session:newChat(resetSent)
     self.log:clear()
     self.note = nil
+    if self.busy then
+      if resetSent then
+        self:awaitStop()
+      else
+        self.stopping = true
+        self:setBusy(false)
+      end
+    end
     -- The bridge confirms with its own "New conversation." status line.
     if not resetSent then self.log:add("status", "New conversation.") end
   end
@@ -172,7 +200,7 @@ return function(F)
   function Session:disconnected()
     if self.busy then
       self.outcome = "lost"
-      self.log:add("error", "Lost the connection to the bridge.")
+      self:fail("Lost the connection to the bridge.")
       self:setBusy(false)
     end
     for id, p in pairs(self.pending) do
@@ -184,9 +212,12 @@ return function(F)
   -- Called periodically: expires requests the bridge never answered.
   function Session:tick()
     local now = self.clock()
-    if self.awaiting and now - self.awaiting >= Session.SEND_TIMEOUT then
+    if self.busy and self.stopDeadline and now >= self.stopDeadline then
+      self.log:add("status", "Stopped. The bridge did not confirm; it may still be finishing.")
+      self:setBusy(false)
+    elseif self.awaiting and now - self.awaiting >= Session.SEND_TIMEOUT then
       self.outcome = "timeout"
-      self.log:add("error", "No answer from the bridge. Is it running and up to date? (npm start)")
+      self:fail("No answer from the bridge. Is it running and up to date? (npm start)")
       self:setBusy(false)
     end
     for id, p in pairs(self.pending) do

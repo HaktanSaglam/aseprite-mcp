@@ -490,7 +490,8 @@ end)
 
 test("format working line, connection and ai summary", function()
   eq(F.working(12, "draw_script"), "Working 12s · draw_script")
-  eq(F.working(3, nil, { done = 2, total = 4, label = "Variation" }), "Working 3s · Variation 2/4")
+  -- The label names the job that finished last ("Variation 3"): not header material.
+  eq(F.working(3, nil, { done = 2, total = 4, label = "Variation 3" }), "Working 3s · 2/4 done")
   eq(F.working(3, "x", { done = 0, total = 0 }), "Working 3s · x")
   eq(F.connection("connected").state, "ok")
   eq(F.connection("disconnected").state, "off")
@@ -537,12 +538,55 @@ end)
 
 test("chat log updates progress in place", function()
   local log = ChatLog.new()
-  log:setProgress(1, 4, "Variation")
-  log:setProgress(2, 4, "Variation")
+  log:setProgress(1, 4, "Variation 1")
+  log:setProgress(2, 4, "Variation 3")
   eq(#log.messages, 1)
-  eq(log:last().text, "Variation 2/4")
+  eq(log:last().text, "2/4 done · Variation 3", "label = the job that just finished")
   log:setProgress(wire({ n = 3 }).n, 4)
-  eq(log:last().text, "Progress 3/4", "float from json")
+  eq(log:last().text, "3/4 done", "float from json, no label")
+end)
+
+-- What a batch of three looks like on the wire: progress, then each job's reply, then
+-- its progress (see bridge GenerationService.runParallel).
+test("chat log keeps one progress line per run, always the newest", function()
+  local log = ChatLog.new(textRender.normalize)
+  log:add("user", "Batch of 3")
+  log:setProgress(0, 3)
+  log:add("ai", "sword: Done.")
+  log:setProgress(1, 3, "sword")
+  log:add("ai", "shield: Done.")
+  log:setProgress(2, 3, "shield")
+  log:add("error", "potion failed: timeout")
+  log:setProgress(3, 3, "potion")
+  local texts = {}
+  for i, m in ipairs(log.messages) do texts[i] = m.text end
+  eq(table.concat(texts, "|"), "Batch of 3|sword: Done.|shield: Done.|potion failed: timeout|3/3 done · potion")
+  -- The next run gets its own line; the finished one stays where it is.
+  log:endProgress()
+  log:add("user", "again")
+  log:setProgress(0, 2)
+  eq(#log.messages, 7)
+  eq(log.messages[5].text, "3/3 done · potion")
+  eq(log:last().text, "0/2 done")
+end)
+
+test("chat log cuts huge messages and doesn't repeat status or error lines", function()
+  local log = ChatLog.new(textRender.normalize)
+  -- "ş" is 2 bytes and "a" shifts them by one: the byte limit falls inside an "ş".
+  log:add("error", "a" .. string.rep("ş", ChatLog.MAX_TEXT))
+  local text = log:last().text
+  truthy(#text < ChatLog.MAX_TEXT + 20, "cut: " .. #text)
+  truthy(utf8.len(text) ~= nil, "cut on a character boundary")
+  truthy(text:find("%(cut%)$"), "says it was cut")
+  log:clear()
+  log:add("status", "New conversation.")
+  log:add("status", "New conversation.")
+  log:add("error", "Still working.")
+  log:add("error", "Still working.")
+  eq(#log.messages, 2, "repeats collapse")
+  log:add("ai", "ok")
+  log:add("ai", "ok")
+  eq(#log.messages, 4, "the AI may say the same thing twice")
 end)
 
 test("chat log caps its size, normalizes text and bumps its version", function()
@@ -674,16 +718,103 @@ test("session: errors before confirmation end the run", function()
   eq(s.busy, true)
 end)
 
-test("session: stop ends locally when nothing will confirm it", function()
-  local s = newSession()
+test("session: Stop before the bridge confirmed waits for it instead of flickering", function()
+  local s, clock = newSession()
   s:sent("x")
-  eq(s:stop(true), true, "not confirmed yet")
+  eq(s:stop(true), false, "the bridge answers the chat_send, then the cancel")
+  eq(s.busy, true)
+  eq(s.stopping, true)
+  -- What the bridge sends for chat_send followed by chat_cancel.
+  s:chatEvent(wire({ kind = "busy", busy = true }))
+  eq(s.busy, true)
+  eq(s.stopping, true, "still stopping after the late busy = true")
+  s:chatEvent(wire({ kind = "status", text = "Stopped." }))
+  clock.t = 102
+  s:chatEvent(wire({ kind = "busy", busy = false }))
   eq(s.busy, false)
+  eq(s.note.text, "Stopped after 2s")
+  eq(s:stop(true), false, "idle: nothing to stop")
+end)
+
+test("session: Stop ends locally when the cancel can't be sent, is pressed twice or never confirmed", function()
+  local s, clock = newSession()
   s:sent("y")
   s:chatEvent({ kind = "busy", busy = true })
   eq(s:stop(false), true, "cancel couldn't be sent")
   eq(s.busy, false)
-  eq(s:stop(true), false, "idle: nothing to stop")
+  eq(s.note.text, "Stopped after 0s")
+
+  s:sent("z")
+  s:chatEvent({ kind = "busy", busy = true })
+  eq(s:stop(true), false)
+  eq(s:stop(true), true, "second Stop doesn't wait any longer")
+  eq(s.busy, false)
+
+  s:sent("w")
+  s:chatEvent({ kind = "busy", busy = true })
+  s:stop(true)
+  clock.t = clock.t + Session.STOP_TIMEOUT - 1
+  s:tick()
+  eq(s.busy, true, "still waiting")
+  clock.t = clock.t + 1
+  s:tick()
+  eq(s.busy, false, "gave up waiting")
+  truthy(s.log:last().text:find("did not confirm"), s.log:last().text)
+  eq(s:needsTimer(), false)
+  -- The bridge's late answer changes nothing.
+  s:chatEvent({ kind = "busy", busy = false })
+  eq(s.busy, false)
+end)
+
+test("session: New chat during a run stops it and says so", function()
+  local s, clock = newSession()
+  s:sent("x")
+  s:chatEvent({ kind = "busy", busy = true })
+  s:newChat(true)
+  eq(s.busy, true, "until the bridge confirms")
+  eq(s.stopping, true)
+  s:chatEvent({ kind = "status", text = "New conversation." })
+  s:chatEvent({ kind = "status", text = "Stopped." })
+  clock.t = 104
+  s:chatEvent({ kind = "busy", busy = false })
+  eq(s.note.text, "Stopped after 4s", "not 'Finished'")
+  eq(kinds(s.log), "status,status")
+
+  s:sent("y")
+  s:chatEvent({ kind = "busy", busy = true })
+  s:newChat(false)
+  eq(s.busy, false, "reset never left: nothing will confirm")
+  eq(s.log:last().text, "New conversation.")
+end)
+
+test("session: a lost or unanswered run leaves a note for the header", function()
+  local s, clock = newSession()
+  s:sent("x")
+  s:chatEvent({ kind = "busy", busy = true })
+  s:disconnected()
+  eq(s.note.text, "Lost the connection to the bridge.")
+  eq(s.note.kind, "error")
+  s:sent("y")
+  clock.t = clock.t + Session.SEND_TIMEOUT
+  s:tick()
+  eq(s.busy, false)
+  truthy(s.note.text:find("No answer"), s.note.text)
+end)
+
+test("session: a parallel run's progress clears with the run", function()
+  local s = newSession()
+  s:sent("batch")
+  s:chatEvent(wire({ kind = "busy", busy = true }))
+  s:chatEvent(wire({ kind = "progress", done = 0, total = 2 }))
+  s:chatEvent(wire({ kind = "progress", done = 1, total = 2, label = "sword" }))
+  eq(s.progress.done, 1)
+  eq(math.type(s.progress.done), "integer", "JSON floats become integers")
+  s:chatEvent(wire({ kind = "busy", busy = false }))
+  eq(s.progress, nil)
+  s:sent("next")
+  s:chatEvent(wire({ kind = "busy", busy = true }))
+  s:chatEvent(wire({ kind = "progress", done = 0, total = 3 }))
+  eq(kinds(s.log), "user,progress,user,progress", "the next run starts its own line")
 end)
 
 test("session: timeouts for unconfirmed runs and unanswered tools", function()
@@ -769,9 +900,115 @@ test("header model: working, offline, result, hints", function()
   eq(busy.busy, true)
   eq(busy.working, "Working 5s · view_sprite")
   eq(busy.phase, 3)
+  s:chatEvent({ kind = "progress", done = 1, total = 3, label = "sword" })
+  eq(Panels.headerModel(s, "connected", "", true, 0).working, "Working 5s · 1/3 done · view_sprite")
+  eq(Panels.headerModel(s, "connected", "", true, 0).progress.total, 3, "drives the bar")
+  s:stop(true)
+  eq(Panels.headerModel(s, "connected", "", true, 0).working, "Stopping...")
   s:chatEvent({ kind = "done", stats = { durationMs = 5000 } })
   s:chatEvent({ kind = "busy", busy = false })
   eq(Panels.headerModel(s, "connected", "", true, 0).note.text, "Done in 5s")
+end)
+
+-- bounds ------------------------------------------------------------------------------------------
+
+local Bounds = load("ui/bounds.lua")
+
+test("bounds: a saved place that still fits is kept", function()
+  local r = Bounds.fit({ x = 100, y = 50, width = 420, height = 400 }, { width = 380, height = 360 }, { width = 1440, height = 900 })
+  eq(r.x, 100)
+  eq(r.y, 50)
+  eq(r.width, 420)
+  eq(r.height, 400)
+  eq(Bounds.fit({ x = 1, y = 2 }, { width = 1, height = 1 }, { width = 9, height = 9 }), nil, "nothing saved yet")
+end)
+
+test("bounds: never smaller than the content, never bigger than the screen", function()
+  local r = Bounds.fit({ x = 0, y = 0, width = 100, height = 100 }, { width = 380, height = 360 }, { width = 1440, height = 900 })
+  eq(r.width, 380)
+  eq(r.height, 360)
+  -- Saved on a 4K monitor, reopened on a laptop.
+  local big = Bounds.fit({ x = 200, y = 100, width = 2400, height = 1800 }, { width = 380, height = 360 }, { width = 1280, height = 720 })
+  eq(big.width, 1280)
+  eq(big.height, 720)
+  eq(big.x, 0)
+  eq(big.y, 0)
+end)
+
+test("bounds: a window partly off-screen is pulled back, a lost one is placed anew", function()
+  local hint, screen = { width = 380, height = 360 }, { width = 1280, height = 720 }
+  local r = Bounds.fit({ x = 1100, y = 600, width = 400, height = 400 }, hint, screen)
+  eq(r.x, 880, "right edge on screen")
+  eq(r.y, 320, "bottom rows on screen")
+  local up = Bounds.fit({ x = -100, y = -30, width = 400, height = 400 }, hint, screen)
+  eq(up.x, 0)
+  eq(up.y, 0, "title bar reachable")
+  eq(Bounds.fit({ x = 3000, y = 100, width = 400, height = 400 }, hint, screen), nil, "monitor gone")
+  eq(Bounds.fit({ x = 100, y = 700, width = 400, height = 400 }, hint, screen) ~= nil, false, "less than 40 px showing")
+end)
+
+-- log view ----------------------------------------------------------------------------------------
+
+local Fakes = load("tests/ui_fakes.lua")
+local LogView = load("ui/log_view.lua")(textRender, LL)
+
+local function viewColors()
+  local names = { "bg", "text", "dim", "faint", "userBubble", "userName", "aiName", "tool", "error", "ok", "warn", "accent", "track" }
+  local out = {}
+  for _, n in ipairs(names) do out[n] = Color{ r = 1, g = 2, b = 3 } end
+  return out
+end
+
+test("log view reuses its layout until the log changes", function()
+  local log = ChatLog.new(textRender.normalize)
+  for i = 1, 300 do log:add("ai", "message " .. i .. " with a few words to wrap") end
+  local view = LogView.new(log)
+  local measured = 0
+  local gc = Fakes.gc(340, 130)
+  local realMeasure = gc.measureText
+  gc.measureText = function(self, s)
+    measured = measured + 1
+    return realMeasure(self, s)
+  end
+  view:paint(gc, viewColors())
+  local first = measured
+  view:paint(gc, viewColors())
+  -- Only the visible lines are drawn again (text_render measures each run it draws).
+  truthy(measured - first < first / 10, "second paint: " .. (measured - first) .. " vs " .. first)
+  local layout = view.layout
+  view:paint(gc, viewColors())
+  eq(view.layout, layout, "cached")
+  log:add("status", "new")
+  view:paint(gc, viewColors())
+  truthy(view.layout ~= layout, "a new message lays out again")
+end)
+
+test("log view wraps a very long URL inside the canvas", function()
+  local log = ChatLog.new(textRender.normalize)
+  log:add("ai", "See https://example.com/" .. string.rep("abcdefghij", 40) .. " for details")
+  local view = LogView.new(log)
+  local gc = Fakes.gc(340, 400)
+  view:paint(gc, viewColors())
+  for _, run in ipairs(gc.runs) do
+    truthy(run.x + (utf8.len(run.text) or #run.text) * 4 <= 340, "inside the canvas: " .. run.text)
+  end
+  truthy(gc:allText():find("for details"), "the words after it still show")
+end)
+
+test("log view: a click on 'more below' jumps to the newest message", function()
+  local log = ChatLog.new(textRender.normalize)
+  for i = 1, 40 do log:add("ai", "line " .. i) end
+  local view = LogView.new(log)
+  local gc = Fakes.gc(340, 130)
+  view:paint(gc, viewColors())
+  eq(view:click({ x = 300, y = 120 }), false, "no hint at the bottom")
+  view:wheel({ deltaY = -4 })
+  view:paint(Fakes.gc(340, 130), viewColors())
+  truthy(view.moreRect, "hint shown")
+  eq(view:click({ x = 10, y = 10 }), false, "elsewhere: nothing")
+  local r = view.moreRect
+  eq(view:click({ x = r.x + 2, y = r.y + 2 }), true)
+  eq(view.scroll, 0)
 end)
 
 test("provider lines explain availability", function()
