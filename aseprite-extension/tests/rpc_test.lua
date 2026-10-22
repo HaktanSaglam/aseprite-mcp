@@ -471,6 +471,15 @@ test("export gif keeps frames, durations and scale, and leaves no extra tab", fu
   back:close()
 end)
 
+test("close_sprite onlyIfEmpty keeps sprites with pixels", function()
+  local empty = call("create_sprite", { width = 4, height = 4, name = "empty one" })
+  local drawn = call("create_sprite", { width = 4, height = 4 })
+  call("write_image", { sprite = drawn.id, x = 0, y = 0, width = 1, height = 1, format = "rgba", data = "ff0000ff" })
+  eq(call("close_sprite", { sprite = drawn.id, onlyIfEmpty = true }).closed, false, "drawn kept")
+  eq(call("close_sprite", { sprite = empty.id, onlyIfEmpty = true }).closed, true, "empty closed")
+  expectError(function() call("get_sprite_info", { sprite = empty.id }) end, "not open")
+end)
+
 print(string.format("%d passed, %d failed", passed, failed))
 -- os.exit is disabled in Aseprite's Lua; a raised error makes the run fail instead.
 if failed > 0 then error(failed .. " test(s) failed") end

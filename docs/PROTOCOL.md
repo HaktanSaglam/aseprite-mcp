@@ -45,6 +45,7 @@ the bridge, where it is fast, typed and unit-tested.
 | `ping` | – | `{pong, version}` |
 | `list_sprites` | – | `{sprites: SpriteSummary[]}` |
 | `activate_sprite` | `sprite` | `{ok}` |
+| `close_sprite` | `sprite`, `onlyIfEmpty?` (keep it if any cel has pixels) | `{closed}` |
 | `get_sprite_info` | – | `SpriteInfo` |
 | `create_sprite` | `width, height, colorMode?("rgb"\|"grayscale"\|"indexed"), frames?, background?` (`rrggbb`/`rrggbbaa`, validated before the sprite opens), `name?` (tab title) | `SpriteInfo` (new sprite becomes active) |
 | `sprite_op` | `op` + op params (below) | `SpriteInfo` |

@@ -84,6 +84,22 @@ return function(U)
     return { sprites = list }
   end
 
+  local function hasPixels(sprite)
+    for _, cel in ipairs(sprite.cels) do
+      if not cel.image:isEmpty() then return true end
+    end
+    return false
+  end
+
+  -- Closes a sprite without asking to save. onlyIfEmpty (what the bridge uses after a
+  -- generation was stopped or failed) never discards a single drawn pixel.
+  function M.close_sprite(p)
+    local sprite = U.sprite(p)
+    if p.onlyIfEmpty and hasPixels(sprite) then return { closed = false } end
+    sprite:close()
+    return { closed = true }
+  end
+
   function M.activate_sprite(p)
     app.sprite = U.sprite(p)
     return { ok = true }
