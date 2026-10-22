@@ -16,6 +16,25 @@ Chat with it in a window inside Aseprite, or connect any [MCP](https://modelcont
 
 </div>
 
+## Made with it
+
+All drawn inside Aseprite by Claude through this extension, on editable layers and frames
+(no image model, no post-processing):
+
+<p align="center">
+  <img src="docs/images/cabin.png" alt="A cozy log cabin in a pine forest at dusk, 128x80" width="512">
+</p>
+<p align="center">
+  <img src="docs/images/knight.png" alt="A 32x32 knight" width="200">
+  <img src="docs/images/slime-idle.gif" alt="A 32x32 slime with a 4-frame idle animation" width="200">
+</p>
+<p align="center">
+  <img src="docs/images/items.png" alt="Six 16x16 RPG items drawn in parallel as a matching set" width="720">
+</p>
+
+*Cabin: one Generate request (128×80, 16-bit style). Knight and slime: Generate, then Animate →
+Idle. Items: one Batch request, six sprites drawn in parallel from the same palette.*
+
 ## Why
 
 AI image generators paint blurry "pixel-style" pictures. Pixel art needs exact pixels, small
