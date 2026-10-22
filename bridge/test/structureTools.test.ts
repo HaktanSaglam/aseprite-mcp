@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { LayerOp, SpriteRef } from "../src/aseprite/protocol.js";
 import { formatDurations, registerAnimationTools, toFrameOp, toTagOp } from "../src/mcp/tools/animation.js";
 import { registerLayerTools, toLayerOp } from "../src/mcp/tools/layers.js";
 import { FakeGateway } from "./fakes/FakeGateway.js";
@@ -272,5 +273,78 @@ describe("formatDurations", () => {
     expect(formatDurations([{ index: 3, durationMs: 50 }, { index: 7, durationMs: 50 }])).toBe("3: 50ms, 7: 50ms");
     expect(formatDurations([{ index: 3, durationMs: 50 }, { index: 4, durationMs: 50 }])).toBe("3-4: 50ms");
     expect(formatDurations([])).toBe("");
+  });
+});
+
+describe("manage_layers: group paths in new names", () => {
+  beforeEach(async () => {
+    gw.addSprite({ width: 4, height: 4, layers: ["Body"] });
+    await h.json("manage_layers", { action: "add", name: "Char", isGroup: true });
+  });
+
+  it('creates "Group/Name" inside that existing group, like every tool addresses it', async () => {
+    const result = await h.json("manage_layers", { action: "add", name: "Char/Shading" });
+    expect(result.layer).toBe("Shading");
+    expect(result.layers.find((l: { name: string }) => l.name === "Shading")).toMatchObject({ path: "Char/Shading" });
+    expect(gw.calls.filter((c) => c.method === "layerOp").at(-1)?.args[0]).toEqual({
+      op: "add",
+      name: "Shading",
+      group: "Char",
+      above: undefined,
+      isGroup: undefined,
+    });
+  });
+
+  it("explains a missing or non-group parent and a doubled group", async () => {
+    expect(await h.error("manage_layers", { action: "add", name: "Hair/Tips" })).toMatch(
+      /Group "Hair" does not exist\. Create it first: action 'add', name "Hair", isGroup: true/,
+    );
+    expect(await h.error("manage_layers", { action: "add", name: "Body/Tips" })).toMatch(/"Body" is not a group/);
+    expect(await h.error("manage_layers", { action: "add", name: "Char/Tips", group: "Char" })).toMatch(/not both/);
+    expect(await h.error("manage_layers", { action: "add", name: "Char/" })).toMatch(/is not a layer path/);
+  });
+
+  it('refuses "/" in names that rename or copy a layer in place', async () => {
+    expect(await h.error("manage_layers", { action: "update", name: "Body", newName: "Char/Body" })).toMatch(
+      /Layer names cannot contain "\/".*action 'move' with group/,
+    );
+    expect(await h.error("manage_layers", { action: "duplicate", name: "Body", newName: "Char/Copy" })).toMatch(
+      /Layer names cannot contain "\/"/,
+    );
+  });
+});
+
+describe("manage_layers: merge_down that Aseprite would refuse", () => {
+  it("names a group above or below instead of reporting a merge that never happens", async () => {
+    gw.addSprite({ width: 4, height: 4 });
+    await h.json("manage_layers", { action: "add", name: "Char", isGroup: true });
+    await h.json("manage_layers", { action: "add", name: "Details" });
+    const layerOps = () => gw.calls.filter((c) => c.method === "layerOp").length;
+    const before = layerOps();
+    expect(await h.error("manage_layers", { action: "merge_down", name: "Details" })).toMatch(
+      /The layer below "Details" is the group "Char"/,
+    );
+    expect(await h.error("manage_layers", { action: "merge_down", name: "Char" })).toMatch(/"Char" is a group/);
+    expect(layerOps()).toBe(before);
+  });
+
+  it("reports an error when Aseprite silently leaves the stack unchanged (e.g. a tilemap)", async () => {
+    class RefusingMerge extends FakeGateway {
+      override async layerOp(op: LayerOp, ref?: SpriteRef) {
+        // Aseprite's disabled Merge Down command: no error and no change.
+        if (op.op === "merge_down") return { layer: op.name };
+        return super.layerOp(op, ref);
+      }
+    }
+    const refusing = new RefusingMerge();
+    refusing.addSprite({ width: 4, height: 4, layers: ["Tiles"] });
+    const harness = await toolHarness([registerLayerTools], refusing);
+    try {
+      expect(await harness.error("manage_layers", { action: "merge_down", name: "Tiles" })).toMatch(
+        /Aseprite did not merge "Tiles" into "Layer 1"; nothing changed/,
+      );
+    } finally {
+      await harness.close();
+    }
   });
 });

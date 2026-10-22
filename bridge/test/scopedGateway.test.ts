@@ -1,9 +1,15 @@
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { describe, expect, it } from "vitest";
 import { ScopedAsepriteGateway } from "../src/aseprite/ScopedAsepriteGateway.js";
-import { scopeToolContext } from "../src/mcp/createMcpServer.js";
+import { CanvasService } from "../src/canvas/CanvasService.js";
+import { createMcpServer, scopeToolContext } from "../src/mcp/createMcpServer.js";
 import type { ToolContext } from "../src/mcp/ToolContext.js";
+import { registerAnimationTools } from "../src/mcp/tools/animation.js";
+import { registerLayerTools } from "../src/mcp/tools/layers.js";
 import { createRgbaImage } from "../src/pixel/RgbaImage.js";
 import { FakeGateway } from "./chatFakes.js";
+import { FakeGateway as ToolFakeGateway } from "./fakes/FakeGateway.js";
 
 function setup() {
   const inner = new FakeGateway();
@@ -96,5 +102,50 @@ describe("scopeToolContext", () => {
     const write = inner.callsOf("writeImages")[0];
     expect(write.args[1]).toEqual({ sprite: 3 });
     expect(inner.callsOf("readImage").every((c) => (c.args[0] as { sprite: number }).sprite === 3)).toBe(true);
+  });
+});
+
+describe("ScopedAsepriteGateway: activate", () => {
+  it("refuses to activate a frame or layer of a sprite in a background tab", async () => {
+    const { inner, scoped } = setup();
+    await expect(scoped.frameOp({ op: "activate", frame: 1 })).rejects.toThrow(
+      /sprite #3, which is not the tab the user is looking at, so it cannot activate frame 1.*take frame and layer arguments/,
+    );
+    await expect(scoped.layerOp({ op: "activate", name: "Layer 1" })).rejects.toThrow(/cannot activate layer "Layer 1"/);
+    expect(inner.callsOf("frameOp")).toHaveLength(0);
+    expect(inner.callsOf("layerOp")).toHaveLength(0);
+    expect(inner.active).toBe(7);
+  });
+
+  it("activates on the tab the user is looking at", async () => {
+    const { inner, scoped } = setup();
+    inner.active = 3;
+    await scoped.frameOp({ op: "activate", frame: 1 });
+    await scoped.layerOp({ op: "activate", name: "Layer 1" });
+    expect(inner.callsOf("frameOp")[0].args).toEqual([{ op: "activate", frame: 1 }, { sprite: 3 }]);
+    expect(inner.callsOf("layerOp")[0].args).toEqual([{ op: "activate", name: "Layer 1" }, { sprite: 3 }]);
+  });
+
+  it("reaches the model as a tool error and leaves the user's tab alone", async () => {
+    const gateway = new ToolFakeGateway();
+    const job = gateway.addSprite({ width: 4, height: 4, frames: 3 });
+    const users = gateway.addSprite({ width: 4, height: 4 }); // the tab the user works in
+    const base: ToolContext = { gateway, canvas: new CanvasService(gateway), scripts: { run: async () => ({}) as never } };
+    const server = createMcpServer(scopeToolContext(base, job), [registerAnimationTools, registerLayerTools]);
+    const client = new Client({ name: "test", version: "0" });
+    const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(serverSide), client.connect(clientSide)]);
+    try {
+      const frames = await client.callTool({ name: "manage_frames", arguments: { action: "activate", frame: 2 } });
+      expect(frames.isError).toBe(true);
+      expect(JSON.stringify(frames.content)).toMatch(/Activating is not needed/);
+      const layers = await client.callTool({ name: "manage_layers", arguments: { action: "activate", name: "Layer 1" } });
+      expect(layers.isError).toBe(true);
+      expect(gateway.activeId).toBe(users);
+      expect(gateway.state(job).activeFrame).toBe(1);
+    } finally {
+      await client.close();
+      await server.close();
+    }
   });
 });

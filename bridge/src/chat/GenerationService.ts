@@ -1,6 +1,7 @@
 import { basename } from "node:path";
 import type { IAsepriteGateway, SpriteInfo } from "../aseprite/AsepriteGateway.js";
 import type { LlmImage } from "../llm/LlmRunner.js";
+import { activeSpriteInfo } from "./activeSprite.js";
 import { captureCanvas, describeCanvas, freshSnapshot } from "./canvasContext.js";
 import {
   batchItems,
@@ -86,7 +87,7 @@ export class GenerationService implements IChatRequestHandler {
     const size = request.options.size ?? reference?.size ?? DEFAULT_SPRITE_SIZE;
     const subject = subjectName(request.text, "Sprite");
     const names = Array.from({ length: total }, (_, i) => `${subject} (variation ${i + 1})`);
-    const sprites = await this.createSprites(names, size, run.signal);
+    const sprites = await this.createSprites(names, size, run);
     if (!sprites) return { ok: false };
     await carryOverPalette(this.deps.gateway, request, sprites.map((s) => s.id));
 
@@ -112,7 +113,7 @@ export class GenerationService implements IChatRequestHandler {
     const sprites = await this.createSprites(
       items.map((item) => subjectName(item)),
       request.options.size ?? DEFAULT_SPRITE_SIZE,
-      run.signal,
+      run,
     );
     if (!sprites) return { ok: false };
     await carryOverPalette(this.deps.gateway, request, sprites.map((s) => s.id));
@@ -130,15 +131,18 @@ export class GenerationService implements IChatRequestHandler {
   private async directions(request: ChatSendRequest, run: RequestRun): Promise<RequestOutcome> {
     const order = DIRECTION_ORDER[request.options.directions ?? 4];
     const size = request.options.size ?? DEFAULT_SPRITE_SIZE;
+    if (run.signal.aborted) return { ok: false };
     const created = await this.deps.gateway.createSprite({
       ...size,
       colorMode: "rgb",
       frames: order.length,
       name: `${subjectName(request.text)} (${order.length} directions)`,
     });
+    run.claimSprite?.(created.id);
     const ref = { sprite: created.id };
     await carryOverPalette(this.deps.gateway, request, [created.id]);
     for (const [i, direction] of order.entries()) {
+      if (run.signal.aborted) return { ok: false };
       await this.deps.gateway.tagOp({ op: "add", name: direction, from: i + 1, to: i + 1 }, ref);
     }
     const info = await this.deps.gateway.getSpriteInfo(ref);
@@ -166,7 +170,7 @@ export class GenerationService implements IChatRequestHandler {
     run: RequestRun,
   ): Promise<{ image: LlmImage; size: { width: number; height: number } }> {
     const missing = "Describe what to draw, or open a sprite to make variations of it.";
-    const sprite = request.sprite ?? (await this.deps.gateway.getSpriteInfo().catch(() => undefined))?.id;
+    const sprite = request.sprite ?? (await activeSpriteInfo(this.deps.gateway))?.id;
     if (sprite === undefined) throw new UserFacingError(missing);
     if (!run.provider.info.supportsImages) {
       throw new UserFacingError(`${run.provider.info.label} can't see images: describe what to draw instead.`);
@@ -180,12 +184,14 @@ export class GenerationService implements IChatRequestHandler {
   private async createSprites(
     names: string[],
     size: { width: number; height: number },
-    signal: AbortSignal,
+    run: RequestRun,
   ): Promise<SpriteInfo[] | undefined> {
     const sprites: SpriteInfo[] = [];
     for (const name of names) {
-      if (signal.aborted) return undefined;
-      sprites.push(await this.deps.gateway.createSprite({ width: size.width, height: size.height, colorMode: "rgb", name }));
+      if (run.signal.aborted) return undefined;
+      const info = await this.deps.gateway.createSprite({ width: size.width, height: size.height, colorMode: "rgb", name });
+      run.claimSprite?.(info.id);
+      sprites.push(info);
     }
     return sprites;
   }

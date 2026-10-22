@@ -126,13 +126,20 @@ function paletteSection(ctx: PromptContext, force: boolean): string | undefined 
   );
 }
 
+/** The unticked "1px outline" box: it must win over every other outline hint the model reads. */
+const NO_OUTLINE =
+  "Outline: none. Draw no outline around the subject or its parts; separate shapes by color and value contrast only. " +
+  "This overrides every outline rule or step in the style, the guide and the tool instructions.";
+
+const noOutline = (options: ChatOptions) => options.outline === false;
+
+// The only place that states the outline, so "none" can never contradict a style rule.
 function lookSection(options: ChatOptions, force: boolean, includeView = true): string | undefined {
   const lines: string[] = [];
   if (includeView && options.view) lines.push(`View: ${VIEW_LINES[options.view]}.`);
 
-  if (options.outline === true) lines.push(`Outline: ${styleOf(options).outline}.`);
-  else if (options.outline === false) lines.push("Outline: none. Separate shapes by color and value contrast only.");
-  else if (force) lines.push(`Outline: ${styleOf(options).outline}.`);
+  if (noOutline(options)) lines.push(NO_OUTLINE);
+  else if (options.outline === true || force || options.style !== undefined) lines.push(`Outline: ${styleOf(options).outline}.`);
 
   if (options.background === "transparent") {
     lines.push("Background: transparent. Draw only the subject and leave every other pixel empty.");
@@ -163,21 +170,39 @@ function explicitOptions(ctx: PromptContext): string | undefined {
   return join([layerSection(ctx), styleSection(ctx.options, false), paletteSection(ctx, false), lookSection(ctx.options, false)]) || undefined;
 }
 
-function finishSection(options: ChatOptions): string {
-  return options.autoReview
-    ? "When everything is drawn, do exactly one review pass: view_sprite (every frame for animations), fix stray pixels, jaggies, broken outlines and unreadable shapes, then stop."
-    : "Check the preview your last drawing call returned; if something reads badly (stray pixels, broken outline, unclear shape), fix it with one more call, then stop.";
+function reviewPass(options: ChatOptions): string {
+  const flaws = noOutline(options) ? "stray pixels, jaggies and unreadable shapes" : "stray pixels, jaggies, broken outlines and unreadable shapes";
+  return `do exactly one review pass: view_sprite (every frame for animations), fix ${flaws}, then stop.`;
 }
 
-const CRAFT = `
-How to make it look good (few, big calls):
-1. Plan first: silhouette and proportions, light from the top-left, and a ramp of 3-5 hue-shifted shades per material (shadows cooler, highlights warmer).
-2. Block in the silhouette and flat base colors in one draw_script (one write_pixels for 32x32 and smaller).
-3. Shade in clusters: shadow side and cast shadows, then highlights. No pillow shading, no noise, no banding.
-4. Clean lines and details: 1px outlines without jaggies or doubled corners, then the small details that sell the subject (eyes, highlights, trims).
-5. Look at the returned preview once and fix what reads badly. Then reply.
-The subject should fill most of the canvas, with a 1-2 px margin.
-`.trim();
+function finishSection(options: ChatOptions): string {
+  if (options.autoReview) return `When everything is drawn, ${reviewPass(options)}`;
+  const flaws = noOutline(options) ? "stray pixels, jaggies, unclear shape" : "stray pixels, broken outline, unclear shape";
+  return `Check the preview your last drawing call returned; if something reads badly (${flaws}), fix it with one more call, then stop.`;
+}
+
+/**
+ * The user's Auto-review setting for actions that may not draw at all (a chat question)
+ * or that already end with their own check: only added when it is switched on.
+ */
+function autoReviewSection(options: ChatOptions, scope = ""): string | undefined {
+  return options.autoReview ? `If you changed the art: when you are done, ${reviewPass(options)}${scope}` : undefined;
+}
+
+function craftSteps(options: ChatOptions): string {
+  const lines = noOutline(options)
+    ? "4. Clean edges and details: crisp shapes without jaggies or doubled pixels (no outline), then the small details that sell the subject (eyes, highlights, trims)."
+    : "4. Clean lines and details: 1px outlines without jaggies or doubled corners, then the small details that sell the subject (eyes, highlights, trims).";
+  return [
+    "How to make it look good (few, big calls):",
+    "1. Plan first: silhouette and proportions, light from the top-left, and a ramp of 3-5 hue-shifted shades per material (shadows cooler, highlights warmer).",
+    "2. Block in the silhouette and flat base colors in one draw_script (one write_pixels for 32x32 and smaller).",
+    "3. Shade in clusters: shadow side and cast shadows, then highlights. No pillow shading, no noise, no banding.",
+    lines,
+    "5. Look at the returned preview once and fix what reads badly. Then reply.",
+    "The subject should fill most of the canvas, with a 1-2 px margin.",
+  ].join("\n");
+}
 
 const GUIDE_HINT =
   'If you are unsure how to draw this subject, call pixel_art_guide once before drawing (e.g. {"topic":"characters"}, "items_icons", "environments" or "tiles").';
@@ -200,7 +225,7 @@ function generationBody(ctx: PromptContext, includeView = true, topicText = ctx.
     paletteSection(ctx, true),
     lookSection(ctx.options, true, includeView),
     `Detail: ${detailForSize(size.width, size.height)}`,
-    CRAFT,
+    craftSteps(ctx.options),
     guide ?? GUIDE_HINT,
     finishSection(ctx.options),
     ctx.canvas,
@@ -219,6 +244,7 @@ export function chatPrompt(ctx: PromptContext): string {
     explicitOptions(ctx),
     ctx.canvas ??
       `No sprite is open in Aseprite. If the request needs drawing, first create one with create_sprite (${size.width}x${size.height} unless the request implies another size).`,
+    autoReviewSection(ctx.options, ctx.selection ? " Keep selectionOnly: true for the fixes." : ""),
     replyLanguage(ctx.text),
   ]);
 }
@@ -238,6 +264,7 @@ export function editSelectionPrompt(ctx: PromptContext & { selection: Rect }): s
       "- Blend into the surrounding art: continue its lines, outline, light direction and colors (the colors in use are listed below).",
       "- Draw on the layer that holds the art there (usually the active layer) unless the user asked for a new layer.",
     ].join("\n"),
+    autoReviewSection(ctx.options, " Keep selectionOnly: true for the fixes."),
     explicitOptions(ctx),
     ctx.canvas,
     replyLanguage(ctx.text),
@@ -261,6 +288,7 @@ export function reviewPrompt(ctx: PromptContext): string {
       .filter(Boolean)
       .join("\n"),
     "Fix on the layers that hold the art, in few calls (draw_script with base:\"current\" for repaints, write_pixels for touch-ups). Then say what you fixed in 1-2 sentences.",
+    autoReviewSection(ctx.options),
     explicitOptions(ctx),
     ctx.canvas,
     replyLanguage(ctx.text),
@@ -272,14 +300,31 @@ export interface AnimationPlan {
   tag: string;
   /** The bridge already added the frames, durations and tag. */
   prepared: boolean;
+  /** They were already there (an earlier attempt that failed or was stopped), so they may hold part of the motion. */
+  resumed?: boolean;
+  /** A tag with the plan's name that the bridge could not reuse (other range or frame count). */
+  existingTag?: { from: number; to: number };
+}
+
+function animationSetup(ctx: PromptContext, plan: AnimationPlan): string {
+  const { animation, tag } = plan;
+  const last = animation.frames;
+  if (plan.resumed) {
+    return `Frames 1-${last} already exist with their durations and the tag "${tag}", left from an earlier attempt (the frames below show what they hold now). Turn them into the motion by editing frames 2-${last} (and frame 1 if the cycle needs it); don't add or remove frames.`;
+  }
+  if (plan.prepared) {
+    return `Frames 1-${last} are already set up as copies of the original frame, with their durations and a tag "${tag}". Turn them into the motion by editing frames 2-${last} (and frame 1 if the cycle needs it); don't add or remove frames.`;
+  }
+  const tagStep = plan.existingTag
+    ? `update the existing tag "${tag}" (now frames ${plan.existingTag.from}-${plan.existingTag.to}) to that range with manage_tags action 'update'; never add a second "${tag}" tag`
+    : `tag the range "${tag}" with manage_tags`;
+  return `The sprite has ${ctx.info?.frames.length ?? 1} frames already. Add the frames you need with manage_frames (copies of the base frame), set their duration to ${animation.frameMs} ms and ${tagStep}.`;
 }
 
 export function animatePrompt(ctx: PromptContext, plan: AnimationPlan): string {
-  const { animation, tag } = plan;
+  const { animation } = plan;
   const text = ctx.text.trim();
-  const setup = plan.prepared
-    ? `Frames 1-${animation.frames} are already set up as copies of the original frame, with their durations and a tag "${tag}". Turn them into the motion by editing frames 2-${animation.frames} (and frame 1 if the cycle needs it); don't add or remove frames.`
-    : `The sprite has ${ctx.info?.frames.length ?? 1} frames already. Add the frames you need with manage_frames (copies of the base frame), set their duration to ${animation.frameMs} ms and tag the range "${tag}" with manage_tags.`;
+  const setup = animationSetup(ctx, plan);
   return join([
     `Animate this sprite: ${ANIMATION_POSES[animation.preset]}.${text ? ` ${text}` : ""}`,
     `Animation: ${animation.frames} frames, ${animation.frameMs} ms per frame, ${animation.loop ? "looping (the last frame must flow into the first)" : "plays once"}.`,
@@ -311,7 +356,7 @@ export function batchItemPrompt(ctx: PromptContext, item: string, index: number,
   const theme = ctx.text.trim();
   return join([
     `Create pixel art: ${item}`,
-    `This is item ${index} of ${total} in a matching set${theme ? ` (${theme})` : ""}. The other items are drawn in parallel from the same rules, so follow them exactly (same palette, outline, light from the top-left, proportions and level of detail) and the set will look consistent.`,
+    `This is item ${index} of ${total} in a matching set${theme ? ` (${theme})` : ""}. The other items are drawn in parallel from the same rules, so follow them exactly (same palette, ${noOutline(ctx.options) ? "" : "outline, "}light from the top-left, proportions and level of detail) and the set will look consistent.`,
     ...generationBody(ctx, true, `${item} ${theme}`),
   ]);
 }
@@ -324,7 +369,7 @@ export function directionsPrompt(ctx: PromptContext, directions: readonly string
     [
       "Workflow:",
       "1. Draw frame 1 (facing down, toward the viewer) completely first: it defines the design.",
-      "2. Draw each other frame from it: same height, proportions, palette, outline and details, feet on the same baseline. Turn the character, don't redesign it.",
+      `2. Draw each other frame from it: same height, proportions, palette${noOutline(ctx.options) ? "" : ", outline"} and details, feet on the same baseline. Turn the character, don't redesign it.`,
       `3. Left-facing frames can mirror the right-facing ones: copy that frame's pixels into the left frame (read_pixels, then write_pixels with frame k) and flip it with transform_layer ${json({ op: "flip_h", frames: [directions.indexOf("left") + 1] })}; then fix asymmetric details such as the weapon hand.`,
     ].join("\n"),
     ...generationBody(ctx, false, "character"),

@@ -197,7 +197,7 @@ interface ChatOptions {
   directions?: 4 | 8;
   count?: number;                    // variations: 2-4 (default 3); without text = variations of the open sprite
   items?: string[];                  // batch: one prompt per item; palette "auto" becomes the style's preset so the set matches
-  outline?: boolean;                 // ask for a 1px dark outline
+  outline?: boolean;                 // true: the style's 1px outline; false: no outline at all (overrides the style); omitted: the style's default
   background?: "transparent" | "solid";
   animation?: {
     preset: "idle" | "walk" | "run" | "jump" | "attack" | "hurt" | "death" | "custom";
@@ -205,7 +205,7 @@ interface ChatOptions {
     frameMs?: number;                // duration per frame
     loop?: boolean;
   };
-  autoReview?: boolean;              // one extra look-and-fix pass at the end
+  autoReview?: boolean;              // one extra look-and-fix pass at the end (every action; chat only when the model changed the art)
 }
 
 type StyleId = "auto" | "8bit" | "16bit" | "gameboy" | "pico8" | "1bit" | "hd";
@@ -219,6 +219,12 @@ Instant, non-AI tools from the Tools tab. The bridge calls the MCP tool of the s
 name in-process, bound to `sprite`, and answers `{event: "tool_result", requestId, ok, text}`
 (`requestId` is echoed as sent, string or number). Colors are `"#rrggbb"` or `"#rrggbbaa"`.
 Send `{steps: 1}` rather than an empty table for undo/redo (Aseprite encodes `{}` as `[]`).
+A param the tool does not take is an error (`ok: false`, naming the accepted arguments).
+
+Tool runs execute one at a time, in the order they arrive. While an AI request draws into
+`sprite` (or has not bound itself to a sprite yet, or runs with no sprite open) the bridge
+answers at once with `ok: false` and "The AI is drawing on this sprite. Wait for the AI to
+finish or press Stop." A `chat_send` waits for tool runs that arrived before it.
 
 Allowed tools and their arguments (all accept the common target `layer?`,
 `frames?: "current" | "all" | number[]`, `selectionOnly?: boolean`):
@@ -238,7 +244,8 @@ Allowed tools and their arguments (all accept the common target `layer?`,
 
 ### `bridge_info`
 
-Sent right after `hello` and whenever provider availability changes:
+Sent right after `hello` and whenever provider availability changes (the bridge re-checks
+every 30 s while Aseprite is connected, e.g. after a key was added to the config file):
 
 ```ts
 { event: "bridge_info", version: string, providers: ProviderInfo[], defaultProvider: string }

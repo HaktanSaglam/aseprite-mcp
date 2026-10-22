@@ -208,6 +208,31 @@ describe("GenerationService: directions", () => {
     await service.execute(request({ action: "directions", text: "a cat" }), run());
     expect(gateway.callsOf("tagOp").map((c) => (c.args[0] as { name: string }).name)).toEqual(["down", "right", "up", "left"]);
   });
+
+  it("creates nothing after Stop and stops adding tags when Stop arrives during setup", async () => {
+    const { gateway, service, runner, controller, run, request } = setup();
+    const stopped = new AbortController();
+    stopped.abort();
+    expect(await service.execute(request({ action: "directions", text: "a cat" }), { ...run(), signal: stopped.signal })).toEqual({ ok: false });
+    expect(gateway.callsOf("createSprite")).toHaveLength(0);
+
+    const tagOp = gateway.tagOp.bind(gateway);
+    gateway.tagOp = async (op, ref) => {
+      await tagOp(op, ref);
+      controller.abort(); // the user presses Stop while the first tag is added
+    };
+    expect(await service.execute(request({ action: "directions", text: "a cat" }), run())).toEqual({ ok: false });
+    expect(gateway.callsOf("tagOp")).toHaveLength(1);
+    expect(runner.requests).toHaveLength(0);
+  });
+
+  it("claims the sprites it draws into, so instant tools stay off them", async () => {
+    const { service, run, request } = setup();
+    const claimed: number[] = [];
+    await service.execute(request({ action: "directions", text: "a cat" }), { ...run(), claimSprite: (id) => claimed.push(id) });
+    await service.execute(request({ text: "a slime", options: { count: 2 } }), { ...run(), claimSprite: (id) => claimed.push(id) });
+    expect(claimed).toEqual([1, 2, 3]);
+  });
 });
 
 describe("subjectName", () => {

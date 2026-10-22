@@ -1,4 +1,6 @@
 import type { IAsepriteGateway, SpriteInfo } from "../aseprite/AsepriteGateway.js";
+import { activeSpriteInfo } from "./activeSprite.js";
+import { AnimationSetup } from "./AnimationSetup.js";
 import { captureCanvas, describeCanvas, freshSnapshot, type CanvasSnapshot, type PreviewMode } from "./canvasContext.js";
 import { ANIMATION_DEFAULTS, DEFAULT_SPRITE_SIZE, type ChatAction, type ChatSendRequest } from "./chatSchema.js";
 import { UserFacingError, type IChatRequestHandler, type RequestOutcome, type RequestRun } from "./chatUpdates.js";
@@ -48,14 +50,23 @@ interface Target {
  * canvas, attach a preview, add animation frames) so the model starts drawing at once.
  */
 export class SingleRunService implements IChatRequestHandler {
-  constructor(private readonly deps: SingleRunDeps) {}
+  private readonly animationSetup: AnimationSetup;
+
+  constructor(private readonly deps: SingleRunDeps) {
+    this.animationSetup = new AnimationSetup(deps.gateway);
+  }
 
   async execute(request: ChatSendRequest, run: RequestRun): Promise<RequestOutcome> {
-    const target = await this.resolveTarget(request);
+    const target = await this.resolveTarget(request, run.signal);
     if (!target) return this.runUnbound(request, run);
 
     const { info } = target;
-    const plan = request.action === "animate" ? await this.prepareAnimation(request, info) : undefined;
+    run.claimSprite?.(info.id);
+    let plan: AnimationPlan | undefined;
+    if (request.action === "animate") {
+      plan = await this.prepareAnimation(request, info, run.signal);
+      if (!plan) return { ok: false };
+    }
     const snapshot = target.fresh
       ? freshSnapshot(info)
       : await captureCanvas(this.deps.gateway, info.id, {
@@ -84,21 +95,23 @@ export class SingleRunService implements IChatRequestHandler {
   }
 
   /** undefined = nothing is open and the action can work without a sprite (plain chat). */
-  private async resolveTarget(request: ChatSendRequest): Promise<Target | undefined> {
+  private async resolveTarget(request: ChatSendRequest, signal: AbortSignal): Promise<Target | undefined> {
     const { gateway } = this.deps;
     const wantsNewSprite = request.action === "generate" && (request.options.target ?? "new_sprite") === "new_sprite";
-    if (wantsNewSprite) return { info: await this.createSprite(request), fresh: true };
+    if (wantsNewSprite) return { info: await this.createSprite(request, signal), fresh: true };
 
     if (request.sprite !== undefined) return { info: await gateway.getSpriteInfo({ sprite: request.sprite }), fresh: false };
 
-    const active = await gateway.getSpriteInfo().catch(() => undefined);
+    const active = await activeSpriteInfo(gateway);
     if (active) return { info: active, fresh: false };
     if (request.action === "chat") return undefined;
-    if (request.action === "generate") return { info: await this.createSprite(request), fresh: true };
+    if (request.action === "generate") return { info: await this.createSprite(request, signal), fresh: true };
     throw new UserFacingError("Open or create a sprite first.");
   }
 
-  private async createSprite(request: ChatSendRequest): Promise<SpriteInfo> {
+  private async createSprite(request: ChatSendRequest, signal: AbortSignal): Promise<SpriteInfo> {
+    // A tab opened after Stop would be an unexplained leftover; ChatService reports the abort as "Stopped.".
+    signal.throwIfAborted();
     const size = request.options.size ?? DEFAULT_SPRITE_SIZE;
     const info = await this.deps.gateway.createSprite({
       width: size.width,
@@ -112,22 +125,12 @@ export class SingleRunService implements IChatRequestHandler {
 
   /**
    * A single-frame sprite gets its frames, durations and tag from the bridge: three
-   * deterministic calls the model would otherwise spend a turn each on.
+   * deterministic calls the model would otherwise spend a turn each on. undefined = Stop.
    */
-  private async prepareAnimation(request: ChatSendRequest, info: SpriteInfo): Promise<AnimationPlan> {
+  private prepareAnimation(request: ChatSendRequest, info: SpriteInfo, signal: AbortSignal): Promise<AnimationPlan | undefined> {
     const animation = request.options.animation ?? { preset: "custom" as const, ...ANIMATION_DEFAULTS.custom };
     const tag = animation.preset === "custom" ? "animation" : animation.preset;
-    if (info.frames.length !== 1) return { animation, tag, prepared: false };
-
-    const { gateway } = this.deps;
-    const ref = { sprite: info.id };
-    await gateway.frameOp({ op: "add", after: 1, count: animation.frames - 1, copy: true }, ref);
-    await gateway.frameOp({ op: "duration", durationMs: animation.frameMs }, ref);
-    await gateway.tagOp(
-      { op: "add", name: tag, from: 1, to: animation.frames, direction: "forward", repeats: animation.loop ? 0 : 1 },
-      ref,
-    );
-    return { animation, tag, prepared: true };
+    return this.animationSetup.prepare(info, animation, tag, signal);
   }
 
   private buildPrompt(request: ChatSendRequest, snapshot: CanvasSnapshot, fresh: boolean, plan?: AnimationPlan): string {
