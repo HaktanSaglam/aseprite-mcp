@@ -193,7 +193,7 @@ interface ChatOptions {
   palette?: PaletteId;               // "auto" | "current" | a preset id
   size?: { width: number; height: number };   // canvas size for generate/variations/batch/directions
   target?: "new_sprite" | "new_layer" | "active_layer";
-  view?: "front" | "side" | "three_quarter" | "top_down" | "isometric" | "tile";   // tile (v1.1): a seamless, tileable texture
+  view?: "front" | "side" | "three_quarter" | "top_down" | "isometric" | "tile";   // tile: a seamless, tileable texture
   directions?: 4 | 8;
   count?: number;                    // variations: 2-4 (default 3); without text = variations of the open sprite
   items?: string[];                  // batch: one prompt per item; palette "auto" becomes the style's preset so the set matches
@@ -204,19 +204,17 @@ interface ChatOptions {
     frames?: number;                 // 2-16; frames/frameMs/loop default per preset (e.g. walk 8 x 100 ms)
     frameMs?: number;                // duration per frame
     loop?: boolean;
-    // v1.1
-    allDirections?: boolean;         // animate every direction tag ("down", "right", ...) of the sprite; down first, the rest matched to it, left mirrored from right when present
-    mode?: "new" | "between" | "continue";  // between: draw `frames` in-betweens between fromFrame and toFrame (both kept); continue: keep frames 1..keepFrames and draw the rest
+    allDirections?: boolean;         // animate every direction tag ("down", "right", ...) of the sprite; down first, the rest matched to it; left, up-left and down-left mirrored from their right-facing pair when present. Only with mode "new"
+    mode?: "new" | "between" | "continue";  // between: draw `frames` in-betweens between neighbouring key frames (toFrame = fromFrame + 1, or the loop wrap fromFrame = last frame, toFrame = 1), both kept; continue: keep frames 1..keepFrames and draw the rest (never deletes frames)
     fromFrame?: number;
     toFrame?: number;
     keepFrames?: number;
   };
   autoReview?: boolean;              // one extra look-and-fix pass at the end (every action; chat only when the model changed the art)
 
-  // v1.1 additions (all optional; omitted = v1.0 behaviour)
-  source?: "prompt" | "current";     // directions/variations: start from frame 1 of `sprite` (the user's art) instead of text
-  maxColors?: number;                // 2-64: hard color limit, enforced by the bridge after the run on the layers the run drew
-  forcePalette?: boolean;            // snap every pixel the run drew to the chosen palette (preset, "current" or "custom") after the run
+  source?: "prompt" | "current";     // directions/variations: start from frame 1 of `sprite` (the user's art) instead of text; text is then optional and the new sprite takes the source's size
+  maxColors?: number;                // 2-64: hard color limit, enforced by the bridge after the run on every frame of the layers the run drew (RGB sprites), one undo step
+  forcePalette?: boolean;            // snap those layers to the chosen palette (preset, "current" or "custom") after the run; a preset or custom palette also becomes the sprite palette before the run
   customPalette?: string[];          // palette "custom": 2-256 colors as "#rrggbb"
   reference?: { sprite: number; frame?: number };   // style reference: another open sprite to match (palette, outline, proportions, shading); attached as an image
 }
@@ -274,7 +272,7 @@ ProviderInfo = { id, label, models: [{id, label}], efforts: string[], available,
 - `progress` `{done, total, label?}` – parallel jobs progress
 - `error` `{text}`
 - `busy` `{busy}` – a run started/finished
-- `done` `{stats: {durationMs, turns?, costUsd?}}` – after a successful run
+- `done` `{stats: {durationMs, turns?, costUsd?, undoSteps?, sprite?}}` – after a successful run
 
 ### Development only: `ui_debug`
 
@@ -285,15 +283,22 @@ which answers `{event: "ui_debug_result", action, ok, error?}`. The extension ig
 `devMode = true` is set in its preferences (`__pref.lua`); synthetic input can't drive Aseprite's
 UI on every platform, so this is how screenshots and end-to-end tests are automated.
 
-## v1.1 additions (contract for the next release)
+## Pixel-art workflow additions
 
-- `chat` update `done`: `stats.undoSteps?: number` – how many undo steps the run added to its
-  sprite. The window offers "Undo AI run", which sends `tool_run undo {steps: undoSteps}` for that sprite.
+- `chat` update `done`: `stats.undoSteps?: number` and `stats.sprite?: number` – how many undo steps
+  the run added to that already-existing sprite (never 0; left out for runs that created their own
+  sprites). The window watches the sprite from the moment it sends the request and offers "Undo AI
+  run" (`tool_run undo {steps: undoSteps}`, up to 1000 steps) only if nothing else changed it.
 - Generate/variations/batch/directions that fail or are stopped before drawing anything close the
-  sprite the bridge created for them (`close_sprite {onlyIfEmpty: true}`).
-- New Lua method `frame_op` op `copy_cel {from, to, layer?, flip?: "horizontal" | "vertical"}`:
-  copies one layer's cel (default: every image layer) from frame `from` to frame `to`, optionally
-  mirrored, as one undo step.
+  sprite the bridge created for them (`close_sprite {onlyIfEmpty: true}`; directions from the user's
+  sprite close it even with the bridge's own copy of frame 1 in it).
+- Every mutating Lua method is one undo step on its target sprite, also on a background tab: the
+  extension makes that sprite active for the transaction and restores the user's tab in the same call
+  (Aseprite's `app.transaction` only groups the active document).
+- New Lua method `frame_op` op `copy_cel {from, to, layer?, flip?: "horizontal" | "vertical", includeLocked?}`:
+  copies one layer's cel (default: every writable image layer; locked ones are skipped unless
+  `includeLocked`, which carries them over unflipped) from frame `from` to frame `to`, optionally
+  mirrored, as one undo step. A source frame without a cel clears the target cel.
 - New MCP tools: `import_image {path, layer?, frame?, x?, y?}` (a PNG from disk onto a layer,
   read by the bridge) and `normalize_pixel_art {scale?: "auto" | number, maxColors?, binaryAlpha?,
   cleanup?, ...target}` (detects and removes upscaling, snaps blocks to their dominant color).
