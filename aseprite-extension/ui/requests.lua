@@ -257,6 +257,61 @@ return function(C)
     return message("batch", trim(s.genPrompt), options, ctx, nil)
   end
 
+  local function framesText(n)
+    return string.format("%d frame%s", n, n == 1 and "" or "s")
+  end
+
+  -- What the bridge would refuse about an animation block on the sprite open now (ctx),
+  -- checked before sending: the Animate tab and Repeat last ask the same of it. Only the
+  -- frame numbers are checked; whether they make sense for the art is the bridge's call.
+  -- Returns nil when it can be sent, else a message for the user.
+  function R.checkAnimation(anim, ctx)
+    local count = ctx.sprite and ctx.sprite.frames
+    local mode = anim.mode or "new"
+    if anim.allDirections then
+      if (ctx.directionTags or 0) == 0 then
+        return 'All directions needs a sprite with direction tags ("down", "right", ...), like the ones ' ..
+          'Generate\'s 4/8 directions makes. Open one, or animate without All directions.'
+      end
+      if mode ~= "new" then
+        return 'All directions animates each direction from its own pose, so Mode must be "New". ' ..
+          "Untick All directions to draw in-betweens or continue an animation."
+      end
+    end
+    if mode == "between" then
+      local from, to = anim.fromFrame, anim.toFrame
+      if from == nil or to == nil then return 'Between frames needs a "From" and a "To" frame.' end
+      if count and count < 2 then
+        return string.format('Between frames needs two key frames, and this sprite has %s. Add a frame or pick Mode "New".',
+          framesText(count))
+      end
+      if count and from > count then
+        return string.format('Between frames: this sprite has %s, so "From" can be at most %d.', framesText(count), count)
+      end
+      if count and to > count then
+        return string.format('Between frames: this sprite has %s, so "To" can be at most %d.', framesText(count), count)
+      end
+      -- The in-betweens are inserted right after "From": any frame between the two keys
+      -- would end up in the middle of them. The loop wrap draws from the last frame to 1.
+      local wraps = to == 1 and from > 1 and (count == nil or from == count)
+      if to ~= from + 1 and not wraps then
+        if count and from == count then
+          return string.format('Between frames: %d is the last frame, so "To" must be 1 (the loop back to the start).', from)
+        end
+        local loop = count and string.format(", or From %d (the last frame) and To 1 for a loop", count) or ""
+        return string.format('Between frames goes between neighbouring frames: set "To" to %d ("From" + 1)%s.',
+          from + 1, loop)
+      end
+    elseif mode == "continue" then
+      local keep = anim.keepFrames
+      if keep == nil then return 'Continue needs "Keep frames".' end
+      if count and keep > count then
+        return string.format('Continue: this sprite has %s, so "Keep" can be at most %d.', framesText(count), count)
+      end
+    end
+    return nil
+  end
+
   function R.animate(s, ai, ctx)
     local ok, err = checkProvider(ai)
     if not ok then return nil, err end
@@ -267,27 +322,16 @@ return function(C)
       frameMs = s.animFrameMs,
       loop = s.animLoop,
     }
-    -- The frame numbers must exist; whether they make sense for the art is the bridge's call.
-    local count = ctx.sprite.frames
     if s.animMode == "between" then
-      if s.animFrom >= s.animTo then
-        return nil, 'Between frames: "From" must be a frame before "To".'
-      end
-      if count and s.animTo > count then
-        return nil, string.format('Between frames: this sprite has %d frame%s, so "To" can be at most %d.',
-          count, count == 1 and "" or "s", count)
-      end
       animation.mode, animation.fromFrame, animation.toFrame = "between", s.animFrom, s.animTo
     elseif s.animMode == "continue" then
-      if count and s.animKeep > count then
-        return nil, string.format('Continue: this sprite has %d frame%s, so "Keep" can be at most %d.',
-          count, count == 1 and "" or "s", count)
-      end
       animation.mode, animation.keepFrames = "continue", s.animKeep
     end
     -- The box is greyed out without direction tags; a tick left over from another sprite
     -- must not ask the bridge for directions this one doesn't have.
     if s.animAllDirections and (ctx.directionTags or 0) > 0 then animation.allDirections = true end
+    local invalid = R.checkAnimation(animation, ctx)
+    if invalid then return nil, invalid end
     local options = aiOptions(ai, s)
     options.animation = animation
     return message("animate", trim(s.animNotes), options, ctx, nil)
@@ -365,8 +409,6 @@ return function(C)
   end
 
   -- Instant tools -------------------------------------------------------------
-
-  R.IMPORT_LAYER = "Imported"
 
   local function hex(color, withHash)
     local rgb, alpha = color:sub(1, 6), color:sub(7, 8)
@@ -457,15 +499,16 @@ return function(C)
         return p
       end,
     },
-    -- Its own layer, so an import never paints over the user's art; the bridge reads the
-    -- file, which keeps big PNGs out of the WebSocket.
+    -- No layer: the bridge then puts every import on a fresh layer named after the file, so
+    -- an import never paints over the user's art, an earlier import, or a layer that merely
+    -- has the same name. The bridge reads the file, which keeps big PNGs out of the WebSocket.
     import_image = {
       tool = "import_image", label = "Import PNG", scoped = false,
       params = function(s)
         local path = trim(s.toolImportPath)
         if path == "" then return nil, 'Choose a PNG file first (the button in the "PNG file" row).' end
         if not path:lower():find("%.png$") then return nil, "Only .png files can be imported." end
-        return { path = path, layer = R.IMPORT_LAYER }
+        return { path = path }
       end,
     },
     -- steps is spelled out because Aseprite's json.encode turns {} into [] and the
@@ -572,6 +615,13 @@ return function(C)
     if INTO_SPRITE_TARGETS[o.target] and action == "generate" and not hasSprite then return nil, NEED_SPRITE end
     if o.palette == "current" and not hasSprite then
       return nil, 'Palette "Current" needs an open sprite. Pick a preset or "Auto".'
+    end
+    -- Checked against the sprite it goes to now, like the Animate tab does: that one may
+    -- have fewer frames or no direction tags. Unlike the tab, an All directions request
+    -- is refused rather than sent without it, which would be a different request.
+    if action == "animate" and type(o.animation) == "table" then
+      local invalid = R.checkAnimation(o.animation, ctx)
+      if invalid then return nil, invalid end
     end
 
     p.sprite = hasSprite and ctx.sprite.id or nil

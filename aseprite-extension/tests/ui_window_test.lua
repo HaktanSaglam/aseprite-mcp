@@ -1101,11 +1101,14 @@ test("animate: All directions needs direction tags; each mode shows its frame nu
   dlg:_tab("tab_animate")
   eq(dlg:_widget("animAllDirections").enabled, true)
   dlg:_click("animAllDirections")
+  eq(dlg:_widget("animMode").enabled, false, "Mode stays New while All directions applies")
   dlg:_click("animRun")
   local p = lastSent(env, "chat_send")
   eq(p.options.animation.allDirections, true)
   eq(p.options.animation.mode, nil, "New is the v1.0 behaviour")
   finishRun(env)
+  dlg:_click("animAllDirections")
+  eq(dlg:_widget("animMode").enabled, true, "free again once unticked")
 
   eq(dlg:_widget("animFrom").visible, false)
   eq(dlg:_widget("animKeep").visible, false)
@@ -1113,13 +1116,13 @@ test("animate: All directions needs direction tags; each mode shows its frame nu
   eq(dlg:_widget("animFrom").visible, true)
   eq(dlg:_widget("animTo").visible, true)
   eq(dlg:_widget("animKeep").visible, false)
-  dlg:_type("animFrom", "1")
+  dlg:_type("animFrom", "2")
   dlg:_type("animTo", "3")
   dlg:_slide("animFrames", 4)
   dlg:_click("animRun")
   local b = lastSent(env, "chat_send")
   eq(b.options.animation.mode, "between")
-  eq(b.options.animation.fromFrame, 1)
+  eq(b.options.animation.fromFrame, 2)
   eq(b.options.animation.toFrame, 3)
   eq(b.options.animation.frames, 4)
   finishRun(env)
@@ -1127,6 +1130,22 @@ test("animate: All directions needs direction tags; each mode shows its frame nu
   dlg:_type("animTo", "9")
   dlg:_click("animRun")
   truthy(env.logText():find("has 3 frames"), env.logText())
+  -- Key frames with frames between them: those would end up amid the in-betweens.
+  local sent = #env.conn.sent
+  dlg:_type("animFrom", "1")
+  dlg:_type("animTo", "3")
+  dlg:_click("animRun")
+  eq(#env.conn.sent, sent, "refused before the bridge has to")
+  -- The log wraps long lines; compare the message as one line.
+  local flat = env.logText():gsub("\n", " ")
+  truthy(flat:find('set "To" to 2 ("From" + 1), or From 3 (the last frame) and To 1 for a loop', 1, true), flat)
+  dlg:_type("animFrom", "3")
+  dlg:_type("animTo", "1")
+  dlg:_click("animRun")
+  local loop = lastSent(env, "chat_send")
+  eq(loop.options.animation.fromFrame, 3, "the loop wrap: last frame to frame 1")
+  eq(loop.options.animation.toFrame, 1)
+  finishRun(env)
 
   dlg:_choose("animMode", "Continue")
   eq(dlg:_widget("animFrom").visible, false)
@@ -1137,17 +1156,83 @@ test("animate: All directions needs direction tags; each mode shows its frame nu
   eq(c.options.animation.mode, "continue")
   eq(c.options.animation.keepFrames, 2)
   eq(env.prefs.animMode, "continue", "remembered")
+  finishRun(env)
 
   -- Another sprite without tags greys it out again and nothing is sent for it.
-  finishRun(env)
+  dlg:_choose("animMode", "New")
+  dlg:_click("animAllDirections")
   newSprite(8, 8)
   dlg:_tab("tab_chat")
   dlg:_tab("tab_animate")
   eq(dlg:_widget("animAllDirections").enabled, false)
-  dlg:_choose("animMode", "New")
+  eq(dlg:_widget("animAllDirections").selected, true, "the tick is left over")
+  eq(dlg:_widget("animMode").enabled, true, "but it doesn't apply here")
   dlg:_click("animRun")
   eq(lastSent(env, "chat_send").options.animation.allDirections, nil)
 end)
+
+-- The bridge refuses All directions with in-betweens or continuing; the window doesn't
+-- let the two be combined in the first place.
+test("All directions and Between/Continue exclude each other: the last choice wins", function()
+  closeAllSprites()
+  local sprite = newSprite(16, 16)
+  sprite:newFrame()
+  local tag = sprite:newTag(1, 1)
+  tag.name = "down"
+  local env = setup()
+  local dlg = env.open("animate")
+  dlg:_choose("animMode", "Between frames")
+  eq(dlg:_widget("animFrom").visible, true)
+  dlg:_click("animAllDirections")
+  eq(dlg:_widget("animMode").option, "New", "ticking All directions sets Mode back to New")
+  eq(env.prefs.animMode, "new")
+  eq(dlg:_widget("animFrom").visible, false, "no From / To for New")
+  eq(dlg:_widget("animMode").enabled, false, "greyed out while All directions applies")
+  dlg:_click("animRun")
+  local p = lastSent(env, "chat_send")
+  eq(p.options.animation.allDirections, true)
+  eq(p.options.animation.mode, nil)
+  finishRun(env)
+
+  -- On a sprite without direction tags Mode is free; picking another mode there clears
+  -- the leftover tick, so coming back can't combine the two.
+  local other = newSprite(8, 8)
+  dlg:_tab("tab_chat")
+  dlg:_tab("tab_animate")
+  eq(dlg:_widget("animMode").enabled, true)
+  dlg:_choose("animMode", "Continue")
+  eq(dlg:_widget("animAllDirections").selected, false, "picking Continue cleared the tick")
+  eq(env.prefs.animAllDirections, false)
+  app.sprite = sprite
+  dlg:_tab("tab_chat")
+  dlg:_tab("tab_animate")
+  eq(dlg:_widget("animMode").enabled, true)
+  dlg:_type("animKeep", "1")
+  dlg:_click("animRun")
+  local c = lastSent(env, "chat_send")
+  eq(c.options.animation.mode, "continue")
+  eq(c.options.animation.allDirections, nil)
+  finishRun(env)
+  other:close()
+end)
+
+-- What the bridge's RPC calls do to a sprite while a run draws: one transaction each.
+local function aiSteps(sprite, n)
+  for _ = 1, n do app.transaction("AI: draw", function() sprite:newLayer() end) end
+end
+
+-- A run that adds `steps` undo steps to `sprite` and reports them like the bridge does.
+-- during(), if given, runs while the AI draws (e.g. the user's own edit).
+local function drawingRun(env, sprite, steps, reported, during)
+  env.conn.event({ event = "chat", kind = "busy", busy = true })
+  aiSteps(sprite, steps)
+  if during then during() end
+  env.conn.event({
+    event = "chat", kind = "done",
+    stats = { durationMs = 1000, undoSteps = reported and reported.undoSteps or steps, sprite = reported and reported.sprite or sprite.id },
+  })
+  env.conn.event({ event = "chat", kind = "busy", busy = false })
+end
 
 test("Undo AI run takes back exactly the last run, only while its sprite is untouched", function()
   closeAllSprites()
@@ -1158,8 +1243,9 @@ test("Undo AI run takes back exactly the last run, only while its sprite is unto
   dlg:_type("chatInput", "draw a cat")
   dlg:_click("chatSend")
   env.conn.event({ event = "chat", kind = "busy", busy = true })
+  aiSteps(a, 3)
   eq(dlg:_widget("quickUndoRun").enabled, false, "not during a run")
-  env.conn.event({ event = "chat", kind = "done", stats = { durationMs = 1000, undoSteps = 3 } })
+  env.conn.event({ event = "chat", kind = "done", stats = { durationMs = 1000, undoSteps = 3, sprite = a.id } })
   env.conn.event({ event = "chat", kind = "busy", busy = false })
   eq(dlg:_widget("quickUndoRun").enabled, true, "the run reported its steps")
 
@@ -1187,7 +1273,7 @@ test("Undo AI run takes back exactly the last run, only while its sprite is unto
   -- the user's own work.
   dlg:_type("chatInput", "add a hat")
   dlg:_click("chatSend")
-  finishRun(env, { durationMs = 1000, undoSteps = 2 })
+  drawingRun(env, a, 2)
   eq(dlg:_widget("quickUndoRun").enabled, true)
   app.transaction(function() a:newLayer() end)
   eq(dlg:_widget("quickUndoRun").enabled, false, "the user changed the sprite")
@@ -1203,6 +1289,50 @@ test("Undo AI run takes back exactly the last run, only while its sprite is unto
   finishRun(env, { durationMs = 1000, undoSteps = 5 })
   dlg:_tab("tab_chat")
   eq(dlg:_widget("quickUndoRun").enabled, false, "new sprite")
+  b:close()
+end)
+
+-- The run's sprite is watched from the moment the request is sent: a stroke the user
+-- made while the AI worked would otherwise be inside "the last N steps".
+test("Undo AI run is not offered when the sprite also changed another way during the run", function()
+  closeAllSprites()
+  local a = newSprite(16, 16)
+  local env = setup()
+  local dlg = env.open()
+  local function send(text)
+    dlg:_type("chatInput", text)
+    dlg:_click("chatSend")
+  end
+  local function offered()
+    dlg:_tab("tab_tools")
+    dlg:_tab("tab_chat")
+    return dlg:_widget("quickUndoRun").enabled
+  end
+
+  send("draw a cat")
+  drawingRun(env, a, 3, nil, function() app.transaction(function() a:newLayer() end) end)
+  eq(offered(), false, "undo 3 would take the user's new layer")
+
+  send("add a hat")
+  drawingRun(env, a, 2, nil, function() app.command.Undo() end)
+  eq(offered(), false, "a Ctrl+Z during the run")
+
+  -- The bridge names the sprite its steps belong to; another one than the request's is
+  -- not offered on either (that one wasn't watched while the run drew).
+  local b = newSprite(8, 8)
+  app.sprite = a
+  send("and a scarf")
+  drawingRun(env, a, 1, { undoSteps = 1, sprite = b.id })
+  eq(offered(), false, "not on the request's sprite")
+  app.sprite = b
+  eq(offered(), false, "nor on the one named")
+
+  app.sprite = a
+  send("and boots")
+  drawingRun(env, a, 2)
+  eq(offered(), true, "untouched: offered")
+  dlg:_click("quickUndoRun")
+  eq(lastSent(env, "tool_run").params.steps, 2)
   b:close()
 end)
 
@@ -1255,6 +1385,50 @@ test("Repeat last resends the last request, never while a run is going", functio
   eq(again.options.reference, nil, "but not the sprite id of the old session")
 end)
 
+test("Repeat last checks an animation like the Animate tab, against the sprite open now", function()
+  closeAllSprites()
+  local knight = newSprite(16, 16)
+  knight:newFrame()
+  knight:newFrame()
+  local down = knight:newTag(1, 1)
+  down.name = "down"
+  local env = setup()
+  local dlg = env.open("animate")
+  dlg:_click("animAllDirections")
+  dlg:_click("animRun")
+  eq(lastSent(env, "chat_send").options.animation.allDirections, true)
+  finishRun(env)
+
+  local plain = newSprite(8, 8)
+  dlg:_tab("tab_chat")
+  local sent = chatSends(env.conn)
+  dlg:_click("quickRepeat")
+  eq(chatSends(env.conn), sent, "not sent as a one-direction animation")
+  truthy(env.logText():find("All directions needs a sprite with direction tags", 1, true), env.logText())
+
+  app.sprite = knight
+  dlg:_tab("tab_animate")
+  dlg:_click("animAllDirections")
+  dlg:_choose("animMode", "Between frames")
+  dlg:_type("animFrom", "2")
+  dlg:_type("animTo", "3")
+  dlg:_click("animRun")
+  eq(lastSent(env, "chat_send").options.animation.toFrame, 3)
+  finishRun(env)
+  app.sprite = plain
+  dlg:_tab("tab_chat")
+  sent = chatSends(env.conn)
+  dlg:_click("quickRepeat")
+  eq(chatSends(env.conn), sent, "frame 3 doesn't exist on a one-frame sprite")
+  truthy(env.logText():find("Between frames needs two key frames, and this sprite has 1 frame.", 1, true), env.logText())
+  app.sprite = knight
+  dlg:_click("quickRepeat")
+  eq(chatSends(env.conn), sent + 1, "fine on the sprite it fits")
+  eq(lastSent(env, "chat_send").sprite, knight.id)
+  finishRun(env)
+  plain:close()
+end)
+
 test("tools: Normalize (unzoom) and Import PNG", function()
   closeAllSprites()
   local sprite = newSprite(16, 16)
@@ -1285,7 +1459,7 @@ test("tools: Normalize (unzoom) and Import PNG", function()
   local i = lastSent(env, "tool_run")
   eq(i.tool, "import_image")
   eq(i.params.path, "/art/hero.png")
-  eq(i.params.layer, "Imported")
+  eq(i.params.layer, nil, "the bridge makes a fresh layer per import")
   eq(i.params.frames, nil)
   eq(i.sprite, sprite.id)
   eq(env.prefs.toolImportPath, "/art/hero.png", "remembered")
@@ -1327,12 +1501,13 @@ test("ui_debug reaches every v1.1 widget", function()
   finishRun(env)
 
   debug({ action = "tab", tab = "animate" })
+  debug({ action = "set", widget = "animAllDirections", value = true })
   debug({ action = "set", widget = "animMode", value = "between" })
+  eq(env.prefs.animAllDirections, false, "set runs the same exclusion as a click")
   debug({ action = "set", widget = "animFrom", value = 1 })
   debug({ action = "set", widget = "animTo", value = 1 })
-  debug({ action = "set", widget = "animAllDirections", value = true })
   debug({ action = "click", widget = "animRun" })
-  truthy(env.logText():find('"From" must be a frame before "To"'), "validated like a click")
+  truthy(env.logText():find("needs two key frames"), "validated like a click")
 
   debug({ action = "tab", tab = "tools" })
   debug({ action = "set", widget = "toolChoice", value = "import_image" })

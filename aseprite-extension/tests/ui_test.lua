@@ -566,15 +566,15 @@ end)
 
 test("animate modes: in-betweens and continuing keep the frames they name", function()
   local ctx = { sprite = { id = 7, width = 40, height = 30, frames = 4 }, directionTags = 0 }
-  local b = R.animate(settings({ animMode = "between", animFrom = 1, animTo = 4, animFrames = 3 }), claude(), ctx)
+  local b = R.animate(settings({ animMode = "between", animFrom = 2, animTo = 3, animFrames = 3 }), claude(), ctx)
   eq(b.options.animation.mode, "between")
-  eq(b.options.animation.fromFrame, 1)
-  eq(b.options.animation.toFrame, 4)
+  eq(b.options.animation.fromFrame, 2)
+  eq(b.options.animation.toFrame, 3)
   eq(b.options.animation.frames, 3)
   eq(b.options.animation.keepFrames, nil)
-  truthy(R.describe(b):find("between 1-4", 1, true), R.describe(b))
+  truthy(R.describe(b):find("between 2-3", 1, true), R.describe(b))
   local _, e1 = R.animate(settings({ animMode = "between", animFrom = 3, animTo = 3 }), claude(), ctx)
-  truthy(e1:find('"From" must be a frame before "To"'), e1)
+  truthy(e1:find('set "To" to 4', 1, true), e1)
   local _, e2 = R.animate(settings({ animMode = "between", animFrom = 1, animTo = 6 }), claude(), ctx)
   truthy(e2:find("has 4 frames"), e2)
 
@@ -597,6 +597,52 @@ test("animate modes: in-betweens and continuing keep the frames they name", func
   truthy(R.describe(all):find("all directions", 1, true), R.describe(all))
 end)
 
+-- The bridge (keyframeSetup.prepareInbetweens) only draws between neighbouring key frames,
+-- or from the last frame back to frame 1 for a loop: frames between the keys would end up
+-- in the middle of the in-betweens.
+test("in-betweens need neighbouring key frames or the loop wrap, like the bridge", function()
+  local four = { sprite = { id = 7, width = 8, height = 8, frames = 4 }, directionTags = 0 }
+  local function between(from, to, ctx)
+    return R.animate(settings({ animMode = "between", animFrom = from, animTo = to }), claude(), ctx or four)
+  end
+  for _, pair in ipairs({ { 1, 2 }, { 3, 4 }, { 4, 1 } }) do
+    local p, err = between(pair[1], pair[2])
+    truthy(p, pair[1] .. "-" .. pair[2] .. ": " .. tostring(err))
+  end
+  local wrap = between(4, 1)
+  eq(wrap.options.animation.fromFrame, 4)
+  eq(wrap.options.animation.toFrame, 1)
+
+  local _, gap = between(1, 4)
+  truthy(gap:find('neighbouring frames: set "To" to 2 ("From" + 1), or From 4 (the last frame) and To 1 for a loop', 1, true), gap)
+  local _, back = between(3, 2)
+  truthy(back:find('set "To" to 4', 1, true), back)
+  local _, early = between(3, 1)
+  truthy(early:find("From 4 (the last frame) and To 1", 1, true), "a loop starts at the last frame: " .. early)
+  local _, last = between(4, 2)
+  eq(last, 'Between frames: 4 is the last frame, so "To" must be 1 (the loop back to the start).')
+  local _, from = between(5, 6)
+  eq(from, 'Between frames: this sprite has 4 frames, so "From" can be at most 4.')
+  local _, to = between(4, 5)
+  eq(to, 'Between frames: this sprite has 4 frames, so "To" can be at most 4.')
+  local _, single = between(1, 2, { sprite = { id = 7, width = 8, height = 8, frames = 1 } })
+  truthy(single:find("needs two key frames, and this sprite has 1 frame.", 1, true), single)
+  local _, same = between(1, 1, { sprite = { id = 7, width = 8, height = 8, frames = 1 } })
+  truthy(same:find("has 1 frame.", 1, true), same)
+end)
+
+test("All directions only goes with Mode New, like the bridge", function()
+  local tagged = { sprite = { id = 7, width = 8, height = 8, frames = 4 }, directionTags = 4 }
+  local _, b = R.animate(settings({ animAllDirections = true, animMode = "between", animFrom = 1, animTo = 2 }), claude(), tagged)
+  truthy(b and b:find('Mode must be "New"', 1, true), tostring(b))
+  local _, c = R.animate(settings({ animAllDirections = true, animMode = "continue", animKeep = 2 }), claude(), tagged)
+  truthy(c and c:find("Untick All directions", 1, true), tostring(c))
+  local untagged = { sprite = tagged.sprite, directionTags = 0 }
+  local ok = R.animate(settings({ animAllDirections = true, animMode = "between", animFrom = 1, animTo = 2 }), claude(), untagged)
+  eq(ok.options.animation.allDirections, nil, "a greyed-out tick is ignored")
+  eq(ok.options.animation.mode, "between")
+end)
+
 test("normalize and import tool payloads", function()
   local n = R.tool("normalize_pixel_art", "1", settings({ toolNormColors = "16", toolNormCleanup = false, toolAllFrames = true }), SPRITE)
   eq(n.tool, "normalize_pixel_art")
@@ -612,7 +658,10 @@ test("normalize and import tool payloads", function()
   local i = R.tool("import_image", "2", settings({ toolImportPath = " /art/Hero.PNG ", toolSelectionOnly = true }), SPRITE)
   eq(i.tool, "import_image")
   eq(i.params.path, "/art/Hero.PNG")
-  eq(i.params.layer, "Imported")
+  -- A fixed name would paint a second import (or the user's own "Imported" layer) over;
+  -- without one the bridge makes a fresh layer named after the file every time.
+  eq(i.params.layer, nil, "no layer: a new one per import")
+  truthy(not json.encode(i.params):find("layer", 1, true), json.encode(i.params))
   eq(i.params.selectionOnly, nil, "import_image takes no common target")
   eq(i.params.frames, nil)
   eq(i.sprite, 7)
@@ -699,17 +748,109 @@ test("repeat last checks what the action needs and drops stale references", func
   eq(restarted.options.reference, nil, "id 3 is another sprite after a restart")
 end)
 
+-- Repeat last goes to the sprite open now, which may have fewer frames or no direction
+-- tags: it gets the Animate tab's checks instead of a run the bridge refuses.
+test("repeat last checks an animation against the sprite open now", function()
+  local tagged = { sprite = { id = 7, width = 8, height = 8, frames = 4 }, directionTags = 4 }
+  local plainSprite = { sprite = { id = 9, width = 8, height = 8, frames = 2 }, directionTags = 0 }
+
+  local all = R.animate(settings({ animAllDirections = true }), claude(), tagged)
+  eq(R.repeatLast(stored(all), tagged, true).options.animation.allDirections, true)
+  local p, e1 = R.repeatLast(stored(all), plainSprite, true)
+  eq(p, nil, "not silently sent as a one-direction animation")
+  truthy(e1:find("All directions needs a sprite with direction tags", 1, true), e1)
+
+  local between = R.animate(settings({ animMode = "between", animFrom = 3, animTo = 4 }), claude(), tagged)
+  eq(R.repeatLast(stored(between), tagged, true).options.animation.toFrame, 4)
+  local _, e2 = R.repeatLast(stored(between), plainSprite, true)
+  eq(e2, 'Between frames: this sprite has 2 frames, so "From" can be at most 2.')
+  local wrap = R.animate(settings({ animMode = "between", animFrom = 4, animTo = 1 }), claude(), tagged)
+  local grown = { sprite = { id = 7, width = 8, height = 8, frames = 7 }, directionTags = 4 }
+  local _, e3 = R.repeatLast(stored(wrap), grown, true)
+  truthy(e3:find("From 7 (the last frame) and To 1", 1, true), "frame 4 is no longer the last one: " .. e3)
+
+  local keep = R.animate(settings({ animMode = "continue", animKeep = 3 }), claude(), tagged)
+  local _, e4 = R.repeatLast(stored(keep), plainSprite, true)
+  eq(e4, 'Continue: this sprite has 2 frames, so "Keep" can be at most 2.')
+
+  -- Stored by a window that let both through: the bridge would refuse it.
+  local both = R.animate(settings({ animAllDirections = true }), claude(), tagged)
+  both.options.animation.mode, both.options.animation.fromFrame, both.options.animation.toFrame = "between", 1, 2
+  local _, e5 = R.repeatLast(stored(both), tagged, true)
+  truthy(e5:find('Mode must be "New"', 1, true), e5)
+end)
+
 -- Run undo ---------------------------------------------------------------------------------
 
+-- run_undo counts on this: one "change" per undo step added to the sprite (empty and
+-- background-tab ones included) and one per step undone or redone, none for things
+-- that leave the history alone. If an Aseprite update changes it, this fails first.
+test("Aseprite fires one sprite change event per undo step (what run undo counts)", function()
+  local a = Sprite(8, 8)
+  local n, fromUndo = 0, 0
+  local code = a.events:on("change", function(ev)
+    n = n + 1
+    if ev.fromUndo then fromUndo = fromUndo + 1 end
+  end)
+  local function count(fn)
+    n, fromUndo = 0, 0
+    fn()
+    return n, fromUndo
+  end
+  eq(count(function()
+    app.transaction("t", function()
+      a:newLayer()
+      a:newFrame()
+      a.layers[1]:cel(1).image:drawPixel(0, 0, Color{ r = 255, g = 0, b = 0 })
+    end)
+  end), 1, "a transaction is one step")
+  eq(count(function() app.transaction("empty", function() end) end), 1, "an empty transaction is a step too")
+  eq(count(function() a:newLayer(); a:newFrame() end), 2, "each call outside a transaction")
+  local undos, undoFlag = count(function() for _ = 1, 3 do app.command.Undo() end end)
+  eq(undos, 3, "one per step undone")
+  eq(undoFlag, 3, "flagged fromUndo")
+  eq(count(function() app.command.Redo() end), 1, "one per step redone")
+  eq(count(function() a.properties("aseprite-mcp").probe = 1 end), 0, "properties are no step")
+  eq(count(function()
+    pcall(app.transaction, "fails", function()
+      a:newLayer()
+      error("boom")
+    end)
+  end), 0, "a rolled-back transaction is no step")
+
+  -- app.transaction groups the ACTIVE sprite's changes only: on a background tab every
+  -- call is its own step (and the active tab gets an empty one).
+  local b = Sprite(8, 8)
+  eq(count(function() app.transaction("bg", function() a:newLayer(); a:newFrame() end) end), 2, "background tab")
+  eq(count(function() app.sprite = a; app.sprite = b end), 0, "switching tabs is no step")
+  a.events:off(code)
+  b:close()
+  a:close()
+end)
+
+-- A fake sprite.events: watch(id, fn) like the window's, change(id, n) fires n changes.
 local function watcher()
-  local w = { watching = {}, stops = 0, fail = false }
+  local w = { listeners = {}, stops = 0, fail = false }
   function w.watch(id, onChange)
     if w.fail then return nil end
-    w.watching[id] = onChange
+    local entry = { id = id, fn = onChange }
+    w.listeners[entry] = true
     return function()
       w.stops = w.stops + 1
-      w.watching[id] = nil
+      w.listeners[entry] = nil
     end
+  end
+  function w.change(id, n)
+    for _ = 1, n or 1 do
+      for entry in pairs(w.listeners) do
+        if entry.id == id then entry.fn() end
+      end
+    end
+  end
+  function w.count()
+    local n = 0
+    for _ in pairs(w.listeners) do n = n + 1 end
+    return n
   end
   return w
 end
@@ -719,19 +860,63 @@ test("run undo offers a run's steps for its sprite until the sprite changes", fu
   local u = RunUndo.new(w.watch)
   eq(u:steps(7), nil)
   u:started(7)
-  eq(u:done(wire({ durationMs = 10, undoSteps = 3 })), true)
+  w.change(7, 3) -- the run's three steps
+  eq(u:done(wire({ durationMs = 10, undoSteps = 3, sprite = 7 })), true)
   u:ended()
   eq(u:steps(7), 3)
   eq(math.type(u:steps(7)), "integer")
   eq(u:steps(8), nil, "other sprites have nothing to undo")
-  w.watching[7]() -- the user drew on it
+  eq(w.count(), 1, "only the offer listens now")
+  w.change(7) -- the user drew on it
   eq(u:steps(7), nil, "the history no longer ends with the run")
-  eq(w.stops, 1, "listener removed")
+  eq(w.count(), 0, "listener removed")
 
   u:started(7)
+  w.change(7, 2)
   u:done({ undoSteps = 2 })
-  eq(u:take(7), 2)
+  eq(u:take(7), 2, "a bridge that doesn't name the sprite: the request's")
   eq(u:steps(7), nil, "handed out once")
+  eq(w.count(), 0)
+end)
+
+test("run undo counts from the start of the run: the user's edits meanwhile mean no offer", function()
+  local w = watcher()
+  local u = RunUndo.new(w.watch)
+  u:started(7)
+  w.change(7, 2) -- AI steps
+  w.change(7) -- the user draws while the AI works
+  w.change(7) -- AI step
+  eq(u:done(wire({ undoSteps = 3, sprite = 7 })), false, "undo 3 would take the user's stroke")
+  eq(u:steps(7), nil)
+  eq(w.count(), 0, "the run's listener is gone")
+
+  u:started(7)
+  w.change(7, 3)
+  w.change(7) -- a Ctrl+Z during the run also counts
+  eq(u:done({ undoSteps = 3, sprite = 7 }), false)
+
+  u:started(7)
+  w.change(7, 2)
+  eq(u:done({ undoSteps = 3, sprite = 7 }), false, "fewer steps than reported: not exact either")
+end)
+
+test("run undo links the steps to the sprite the bridge names", function()
+  local w = watcher()
+  local u = RunUndo.new(w.watch)
+  u:started(7)
+  w.change(7, 2)
+  eq(u:done(wire({ undoSteps = 2, sprite = 8 })), false, "steps on a sprite not watched since the start")
+  eq(u:steps(7), nil, "not offered for the request's sprite either")
+  eq(u:steps(8), nil)
+
+  u:started(nil) -- sent without a sprite: the bridge picked one when it started
+  eq(u:done(wire({ undoSteps = 1, sprite = 8 })), false)
+  eq(u:steps(8), nil)
+
+  u:started(7)
+  w.change(7, 2)
+  eq(u:done(wire({ undoSteps = 2, sprite = 7 })), true, "7.0 on the wire is sprite 7")
+  eq(u:steps(7), 2)
 end)
 
 test("run undo ignores runs it can't attribute or that changed nothing", function()
@@ -740,20 +925,30 @@ test("run undo ignores runs it can't attribute or that changed nothing", functio
   u:started(nil) -- generate into a new sprite
   eq(u:done({ undoSteps = 5 }), false)
   u:started(7)
+  w.change(7, 4)
   u:done({ undoSteps = 4 })
   u:ended()
   u:started(7)
-  eq(u:done({ undoSteps = 0 }), false, "a run that only answered")
+  eq(u:done({ durationMs = 5 }), false, "a run that only answered")
   eq(u:steps(7), 4, "the drawing run before it can still be undone")
   u:ended()
   eq(u:done({ undoSteps = 9 }), false, "a late done after the run ended")
   eq(u:steps(7), 4)
   u:started(7)
-  eq(u:done({}), false, "an older bridge reports no undoSteps")
+  w.change(7)
+  eq(u:steps(7), nil, "a step of the next run withdraws the earlier offer at once")
+  eq(u:done({}), false, "a bridge that withheld undoSteps")
   w.fail = true
   u:started(8)
   eq(u:done({ undoSteps = 2 }), false, "unwatchable sprite: no offer")
   eq(u:steps(8), nil)
+  w.fail = false
+
+  u:started(7)
+  u:started(9) -- a new run before the last one reported: only the new one is counted
+  eq(w.count(), 1)
+  u:ended()
+  eq(w.count(), 0, "nothing keeps listening once the run ended")
 end)
 
 -- Per-sprite Generate settings ------------------------------------------------------------------
