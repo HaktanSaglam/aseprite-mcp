@@ -2,6 +2,7 @@ import type {
   IPixelGateway,
   ISelectionGateway,
   ISpriteGateway,
+  LayerInfo,
   Rect,
   SpriteInfo,
   SpriteRef,
@@ -91,17 +92,28 @@ export function resolveFrames(selector: FrameSelector | undefined, info: SpriteI
 
 /**
  * The layer Aseprite uses when none is named (U.defaultLayer in the extension): the
- * active one, else the top image layer. Returned as a path so that a user clicking
- * another layer or tab halfway through a call can't redirect its write; undefined
- * when the path would be ambiguous (duplicate names), leaving the choice to Aseprite.
+ * active one, the top image layer inside an active group, else the sprite's top image
+ * layer. Returned as a path so that a user clicking another layer or tab halfway
+ * through a call can't redirect its write; undefined whenever the bridge can't be sure
+ * (duplicate paths, an empty active group), leaving the choice or the error to Aseprite.
  */
 export function defaultLayerPath(info: SpriteInfo): string | undefined {
-  const active = info.activeLayer === undefined ? [] : info.layers.filter((l) => l.name === info.activeLayer);
-  if (active.length > 1) return undefined;
-  const images = info.layers.filter((l) => !l.isGroup);
-  const layer = active.length === 1 && !active[0].isGroup ? active[0] : images[images.length - 1];
+  const layer = info.activeLayer === undefined ? topImageLayer(info.layers) : activeImageLayer(info);
   if (!layer) return undefined;
   return info.layers.filter((l) => l.path === layer.path).length === 1 ? layer.path : undefined;
+}
+
+/** info.layers is in Aseprite's stacking order, bottom first. */
+function topImageLayer(layers: LayerInfo[]): LayerInfo | undefined {
+  return layers.filter((l) => !l.isGroup).at(-1);
+}
+
+/** activeLayer is a path (e.g. "Body/Arm"), never a bare name. */
+function activeImageLayer(info: SpriteInfo): LayerInfo | undefined {
+  const active = info.layers.filter((l) => l.path === info.activeLayer);
+  if (active.length !== 1) return undefined;
+  if (!active[0].isGroup) return active[0];
+  return topImageLayer(info.layers.filter((l) => l.path.startsWith(`${active[0].path}/`)));
 }
 
 /**
