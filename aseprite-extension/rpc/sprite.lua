@@ -132,6 +132,11 @@ return function(U)
         end
       end
     end)
+    -- Sprite() opens the tab at 100%, where a 32x32 sprite is a speck in the corner;
+    -- File > New zooms new sprites to fit, so do the same. Zoom is view state, not undo.
+    if app.isUIAvailable and app.sprite == sprite then
+      pcall(function() app.command.FitScreen() end)
+    end
     app.refresh()
     return M.spriteInfo(sprite)
   end
