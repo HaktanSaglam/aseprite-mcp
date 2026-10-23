@@ -89,6 +89,57 @@ describe("parseChatSend", () => {
     expect(result.error).toMatch(/options\.style/);
   });
 
+  it("accepts the v1.1 options", () => {
+    const request = parse({
+      action: "directions",
+      sprite: 2,
+      options: {
+        view: "tile",
+        source: "current",
+        maxColors: 12,
+        forcePalette: true,
+        palette: "custom",
+        customPalette: ["#1A1C2C", "5d275d", "#b13e53"],
+        reference: { sprite: 7, frame: 2 },
+        animation: { preset: "walk", allDirections: true, mode: "between", fromFrame: 2, toFrame: 3, keepFrames: 4 },
+      },
+    });
+    expect(request.options).toMatchObject({
+      view: "tile",
+      source: "current",
+      maxColors: 12,
+      forcePalette: true,
+      palette: "custom",
+      // Normalised: lower case with "#", so prompts and palette math see one format.
+      customPalette: ["#1a1c2c", "#5d275d", "#b13e53"],
+      reference: { sprite: 7, frame: 2 },
+      animation: { preset: "walk", frames: 8, allDirections: true, mode: "between", fromFrame: 2, toFrame: 3, keepFrames: 4 },
+    });
+  });
+
+  it("treats a cleared reference or custom palette (an empty Lua table) as not set", () => {
+    for (const empty of [[], {}]) {
+      const options = parse({ text: "x", options: { reference: empty, customPalette: empty } }).options;
+      expect(options.reference).toBeUndefined();
+      expect(options.customPalette).toBeUndefined();
+    }
+  });
+
+  it("rejects out-of-range v1.1 values", () => {
+    for (const options of [
+      { maxColors: 1 },
+      { maxColors: 65 },
+      { customPalette: ["#ffffff"] },
+      { customPalette: ["red", "#000000"] },
+      { reference: { frame: 1 } },
+      { source: "clipboard" },
+      { animation: { mode: "sideways" } },
+      { animation: { fromFrame: 0 } },
+    ]) {
+      expect({ options, ok: parseChatSend({ event: "chat_send", options }).ok }).toEqual({ options, ok: false });
+    }
+  });
+
   it("rejects unknown actions and bad sizes", () => {
     expect(parseChatSend({ event: "chat_send", action: "paint" }).ok).toBe(false);
     expect(parseChatSend({ event: "chat_send", options: { size: { width: 0, height: 8 } } }).ok).toBe(false);
@@ -128,6 +179,30 @@ describe("checkRequest / batchItems", () => {
     for (const action of ["edit_selection", "review", "animate", "variations"] as const) {
       expect(checkRequest(request(action))).toBeUndefined();
     }
+  });
+
+  it("lets directions from the current sprite run without text", () => {
+    expect(checkRequest(request("directions", "", { source: "current" }))).toBeUndefined();
+    expect(checkRequest(request("directions", "", { source: "prompt" }))).toMatch(/Describe what to draw/);
+  });
+
+  it("needs the colors of a custom palette", () => {
+    expect(checkRequest(request("generate", "a cat", { palette: "custom" }))).toMatch(/Custom" needs its colors/);
+    expect(checkRequest(request("generate", "a cat", { palette: "custom", customPalette: ["#000000", "#ffffff"] }))).toBeUndefined();
+  });
+
+  it("checks the animate modes' frame choices", () => {
+    const animate = (animation: Record<string, unknown>) =>
+      checkRequest(request("animate", "", { animation: { preset: "walk", frames: 4, frameMs: 100, loop: true, ...animation } }));
+    expect(animate({ allDirections: true, mode: "continue", keepFrames: 2 })).toMatch(/can't be combined/);
+    expect(animate({ allDirections: true })).toBeUndefined();
+    expect(animate({ mode: "between", fromFrame: 2 })).toMatch(/two key frames/);
+    expect(animate({ mode: "between", fromFrame: 2, toFrame: 2 })).toMatch(/two different key frames/);
+    expect(animate({ mode: "between", fromFrame: 2, toFrame: 3 })).toBeUndefined();
+    expect(animate({ mode: "continue" })).toMatch(/number of frames to keep/);
+    expect(animate({ mode: "continue", keepFrames: 3 })).toBeUndefined();
+    // Animation options on other actions are not checked: they are ignored there.
+    expect(checkRequest(request("review", "", { animation: { preset: "walk", frames: 4, frameMs: 100, loop: true, mode: "between" } }))).toBeUndefined();
   });
 
   it("needs at least one non-blank batch item", () => {

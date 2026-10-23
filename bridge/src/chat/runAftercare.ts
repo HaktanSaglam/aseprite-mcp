@@ -1,0 +1,39 @@
+import type { ISpriteCloser } from "../aseprite/AsepriteGateway.js";
+import type { DrawnCel } from "../aseprite/SpriteActivity.js";
+import type { ChatOptions } from "./chatSchema.js";
+import type { ChatSink } from "./chatUpdates.js";
+import type { PaletteEnforcer } from "./paletteLimits.js";
+
+/**
+ * Closes a sprite the bridge created for a request that failed or was stopped, unless
+ * something was drawn in it. Best effort: a leftover tab is better than an error that
+ * hides why the request ended.
+ */
+export async function closeIfEmpty(gateway: ISpriteCloser, sprite: number): Promise<void> {
+  try {
+    await gateway.closeSprite(sprite, { onlyIfEmpty: true });
+  } catch (error) {
+    console.error(`[bridge] could not close sprite #${sprite}:`, error);
+  }
+}
+
+/**
+ * maxColors / forcePalette after a successful run, reported in the chat. A failure is
+ * reported, not thrown: the art itself is finished.
+ */
+export async function enforceColorRules(
+  enforcer: PaletteEnforcer,
+  sprite: number,
+  drawn: readonly DrawnCel[],
+  options: ChatOptions,
+  sink: ChatSink,
+  label?: string,
+): Promise<void> {
+  const prefix = label ? `${label}: ` : "";
+  try {
+    const status = await enforcer.enforce(sprite, drawn, options);
+    if (status) sink({ kind: "status", text: prefix + status });
+  } catch (error) {
+    sink({ kind: "error", text: `${prefix}Could not apply the color rules: ${error instanceof Error ? error.message : String(error)}` });
+  }
+}

@@ -3,6 +3,13 @@
 return function(U)
   local M = {}
 
+  -- app.transaction only groups the changes of the ACTIVE sprite: on a background tab
+  -- every API call becomes its own undo step, and an empty step lands in the history of
+  -- the tab the user is looking at. So the sprite is active while its transaction runs.
+  local function transaction(sprite, label, fn)
+    U.withActive(sprite, function() app.transaction(label, fn) end)
+  end
+
   -- sprite:newFrame() has surprising numbering in scripts, so insert empty frames and
   -- copy cels explicitly.
   local function copyCels(sprite, from, to)
@@ -15,6 +22,34 @@ return function(U)
         end
       end
     end)
+  end
+
+  local FLIPS = { horizontal = FlipType.HORIZONTAL, vertical = FlipType.VERTICAL }
+
+  -- copy_cel without a layer copies every layer it may write: locked layers (or layers
+  -- in a locked group) and tilemaps are skipped instead of failing the whole copy.
+  local function copyTargets(sprite, name)
+    if name ~= nil then return { U.checkWritable(U.requireLayer(sprite, name)) } end
+    local layers = {}
+    U.eachLayer(sprite.layers, function(layer)
+      if layer.isImage and pcall(U.checkWritable, layer) then layers[#layers + 1] = layer end
+    end)
+    return layers
+  end
+
+  -- The cel's image (a copy) and where it goes, mirrored across the whole canvas so a
+  -- character standing in the middle stays in the middle.
+  local function placedImage(sprite, cel, flip)
+    local image = cel.image:clone()
+    local pos = cel.position
+    if flip == "horizontal" then
+      image:flip(FLIPS.horizontal)
+      pos = Point(sprite.width - pos.x - image.width, pos.y)
+    elseif flip == "vertical" then
+      image:flip(FLIPS.vertical)
+      pos = Point(pos.x, sprite.height - pos.y - image.height)
+    end
+    return image, pos
   end
 
   local FRAME_OPS = {
@@ -47,6 +82,29 @@ return function(U)
       end
     end,
 
+    -- The target frame ends up exactly like the source frame on those layers: a source
+    -- frame without a cel there clears the target's cel.
+    copy_cel = function(sprite, p)
+      if p.from == nil or p.to == nil then error("copy_cel needs from and to") end
+      local from = U.frameNumber(sprite, p.from)
+      local to = U.frameNumber(sprite, p.to)
+      if p.flip ~= nil and not FLIPS[p.flip] then
+        error("Unknown flip: " .. tostring(p.flip) .. " (horizontal or vertical)")
+      end
+      for _, layer in ipairs(copyTargets(sprite, p.layer)) do
+        local source = layer:cel(from)
+        if source then
+          -- Read before newCel: with from == to it replaces (deletes) the source cel.
+          local image, pos = placedImage(sprite, source, p.flip)
+          local opacity = source.opacity
+          local copy = sprite:newCel(layer, to, image, pos)
+          copy.opacity = opacity
+        elseif layer:cel(to) then
+          sprite:deleteCel(layer:cel(to))
+        end
+      end
+    end,
+
     activate = function(sprite, p)
       app.sprite = sprite
       app.frame = sprite.frames[U.frameNumber(sprite, p.frame)]
@@ -60,7 +118,7 @@ return function(U)
     if p.op == "activate" then
       op(sprite, p)
     else
-      app.transaction("AI: frames " .. p.op, function() op(sprite, p) end)
+      transaction(sprite, "AI: frames " .. p.op, function() op(sprite, p) end)
     end
     app.refresh()
     return { ok = true, frames = #sprite.frames }
@@ -105,7 +163,7 @@ return function(U)
     local sprite = U.sprite(p)
     local op = TAG_OPS[p.op]
     if not op then error("Unknown tag_op: " .. tostring(p.op)) end
-    app.transaction("AI: tag " .. p.op, function() op(sprite, p) end)
+    transaction(sprite, "AI: tag " .. p.op, function() op(sprite, p) end)
     app.refresh()
     return { ok = true }
   end

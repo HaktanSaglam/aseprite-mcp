@@ -2,6 +2,7 @@ import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { ChatService } from "../src/chat/ChatService.js";
 import { GenerationService } from "../src/chat/GenerationService.js";
 import type { InstantToolRequest } from "../src/chat/InstantToolService.js";
+import { SpriteActivity } from "../src/aseprite/SpriteActivity.js";
 import { SessionStore } from "../src/chat/SessionStore.js";
 import { SingleRunService } from "../src/chat/SingleRunService.js";
 import type { LlmEvent, ProviderInfo } from "../src/llm/LlmRunner.js";
@@ -30,8 +31,8 @@ function harness(providers: ProviderInfo[] = [CLAUDE_INFO], providerPollMs?: num
   const service = new ChatService({
     events,
     registry,
-    singleRun: new SingleRunService({ gateway, mcpUrls: URLS, sessions }),
-    generation: new GenerationService({ gateway, mcpUrlFor: URLS.forSprite, sessions, maxParallelRuns: 2 }),
+    singleRun: new SingleRunService({ gateway, mcpUrls: URLS, sessions, activity: new SpriteActivity() }),
+    generation: new GenerationService({ gateway, mcpUrlFor: URLS.forSprite, sessions, maxParallelRuns: 2, activity: new SpriteActivity() }),
     instantTools,
     sessions,
     version: "9.9.9",
@@ -501,7 +502,7 @@ describe("ChatService: Aseprite not answering", () => {
 describe("SingleRunService: Stop before the run", () => {
   it("opens no new sprite once Stop was pressed", async () => {
     const gateway = new FakeGateway();
-    const service = new SingleRunService({ gateway, mcpUrls: URLS, sessions: new SessionStore() });
+    const service = new SingleRunService({ gateway, mcpUrls: URLS, sessions: new SessionStore(), activity: new SpriteActivity() });
     const stop = new AbortController();
     stop.abort();
     const run = {

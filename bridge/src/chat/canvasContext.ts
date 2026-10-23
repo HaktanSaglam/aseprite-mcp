@@ -83,6 +83,20 @@ function pngImage(image: RgbaImage, target: number): { image: LlmImage; scale: n
   return { image: { mediaType: "image/png", base64: renderPreviewPng(image, scale).toString("base64") }, scale };
 }
 
+/**
+ * Chosen frames (visible layers) as one picture, left to right then top to bottom: the
+ * key frames of an in-between, or a finished animation another one must match.
+ */
+export async function framesPreview(
+  gateway: Pick<IAsepriteGateway, "readImage">,
+  sprite: number,
+  frames: readonly number[],
+): Promise<LlmImage> {
+  const images: RgbaImage[] = [];
+  for (const frame of frames) images.push((await gateway.readImage({ sprite, frame, flattened: true })).image);
+  return pngImage(images.length === 1 ? images[0] : filmstrip(images, 8), images.length === 1 ? 512 : 768).image;
+}
+
 /** A sprite the bridge has just created: nothing to read, it is empty by construction. */
 export function freshSnapshot(info: SpriteInfo): CanvasSnapshot {
   return { info, content: { isEmpty: true, colors: [], totalColors: 0 } };

@@ -9,12 +9,21 @@ import {
   directionsPrompt,
   editSelectionPrompt,
   generatePrompt,
+  mirrorFixPrompt,
   reviewPrompt,
   variationPrompt,
+  type DirectionsPlan,
   type PromptContext,
 } from "../src/chat/promptBuilder.js";
+import { mirrorPairs } from "../src/chat/directions.js";
 import { detailForSize, STYLE_SPECS } from "../src/chat/styleSpecs.js";
 import { spriteInfo } from "./chatFakes.js";
+
+const directionsPlan = (n: 4 | 8): DirectionsPlan => ({
+  directions: DIRECTION_ORDER[n],
+  mirrors: mirrorPairs(DIRECTION_ORDER[n]),
+  fromCurrent: false,
+});
 
 const fresh = (options: ChatOptions = {}, text = "a knight"): PromptContext => ({
   text,
@@ -206,8 +215,14 @@ describe("parallel prompts", () => {
     expect(new Set(prompts).size).toBe(4);
   });
 
-  it("refers to the attached image for reference variations", () => {
-    expect(variationPrompt(fresh({}, ""), 2, 3, true)).toMatch(/^Draw variation 2 of 3 of the sprite in the attached image/);
+  it("refers to the attached image for reference variations, with the user's direction when given", () => {
+    const bare = variationPrompt(fresh({}, ""), 2, 3, true);
+    expect(bare).toMatch(/^Draw variation 2 of 3 of the sprite in the first attached image/);
+    expect(bare).not.toMatch(/The user's direction/);
+    // source "current" with text: the sprite stays the subject, the text steers it.
+    const steered = variationPrompt(fresh({ source: "current" }, "in winter clothes"), 1, 3, true);
+    expect(steered).toMatch(/^Draw variation 1 of 3 of the sprite in the first attached image.*\nThe user's direction for the variations: in winter clothes/);
+    expect(steered).not.toMatch(/Create pixel art/);
   });
 
   it("keeps batch items consistent", () => {
@@ -217,15 +232,42 @@ describe("parallel prompts", () => {
     expect(prompt).toContain('get_palette_preset {"id":"sweetie16"}');
   });
 
-  it("orders directions and explains the mirroring shortcut", () => {
+  it("orders directions and leaves the left-facing frames to the bridge's mirror", () => {
     expect(DIRECTION_ORDER[4]).toEqual(["down", "right", "up", "left"]);
     expect(DIRECTION_ORDER[8]).toEqual(["down", "down-right", "right", "up-right", "up", "up-left", "left", "down-left"]);
-    const prompt = directionsPrompt(fresh({ view: "side" }), DIRECTION_ORDER[8]);
+    const prompt = directionsPrompt(fresh({ view: "side" }), directionsPlan(8));
     expect(prompt).toMatch(/facing 8 directions/);
     expect(prompt).toMatch(/1 = down, 2 = down-right.*8 = down-left/);
     expect(prompt).toMatch(/Draw frame 1 \(facing down/);
-    expect(prompt).toContain('transform_layer {"op":"flip_h","frames":[7]}');
+    expect(prompt).toMatch(/Draw frames 2 \(down-right\), 3 \(right\), 4 \(up-right\) and 5 \(up\) from it/);
+    expect(prompt).toMatch(
+      /Leave frames 6 \(up-left\), 7 \(left\) and 8 \(down-left\) empty: when you finish, the bridge mirrors frame 4 \(up-right\), frame 3 \(right\) and frame 2 \(down-right\) into them/,
+    );
+    // The model no longer copies pixels around itself.
+    expect(prompt).not.toMatch(/read_pixels, then write_pixels|"op":"flip_h"/);
     expect(prompt).not.toMatch(/View: side/); // directions define the view
+  });
+
+  it("turns the user's design in frame 1 instead of inventing one", () => {
+    const ctx: PromptContext = { ...fresh({}, ""), freshSprite: false, hasContent: true };
+    const prompt = directionsPrompt(ctx, { ...directionsPlan(4), fromCurrent: true });
+    expect(prompt).toMatch(/^Turn the character in frame 1 into 4 directions/);
+    expect(prompt).toMatch(/Frame 1 already holds the finished design facing down.*Don't redraw or change it/);
+    expect(prompt).toMatch(/Draw every frame on its layer "Layer 1"/);
+    expect(prompt).toMatch(/Draw frames 2 \(right\) and 3 \(up\) from it/);
+    expect(prompt).toMatch(/Leave frame 4 \(left\) empty: when you finish, the bridge mirrors frame 2 \(right\) into it/);
+    expect(prompt).not.toMatch(/A new empty/);
+    expect(directionsPrompt({ ...ctx, text: "give him a red cape" }, { ...directionsPlan(4), fromCurrent: true })).toMatch(
+      /The user's note: give him a red cape/,
+    );
+  });
+
+  it("asks only for the asymmetric details after the mirror", () => {
+    const prompt = mirrorFixPrompt({ ...fresh(), freshSprite: false }, directionsPlan(4), true);
+    expect(prompt).toMatch(/^The bridge mirrored frame 2 \(right\) into frame 4 \(left\)\. A preview of every frame is attached/);
+    expect(prompt).toMatch(/Fix only what must not be mirrored in frame 4 \(left\)/);
+    expect(prompt).toMatch(/If nothing needs fixing, change nothing/);
+    expect(mirrorFixPrompt(fresh(), directionsPlan(8), false)).toMatch(/Call view_sprite with frames "all"/);
   });
 });
 
@@ -274,7 +316,7 @@ describe("outline: false (the unticked '1px outline' box)", () => {
         const prompts = [
           generatePrompt(fresh({ style, outline: false, autoReview })),
           batchItemPrompt(fresh({ style, outline: false, autoReview }), "potion", 1, 3),
-          directionsPrompt(fresh({ style, outline: false, autoReview }), DIRECTION_ORDER[4]),
+          directionsPrompt(fresh({ style, outline: false, autoReview }), directionsPlan(4)),
         ];
         for (const prompt of prompts) {
           expect(prompt).toMatch(/Outline: none\..*overrides every outline rule or step in the style, the guide/);
@@ -335,5 +377,74 @@ describe("animatePrompt after an earlier attempt", () => {
   it("asks to update an existing tag instead of adding a second one", () => {
     const prompt = animatePrompt(ctx, { animation, tag: "walk", prepared: false, existingTag: { from: 1, to: 3 } });
     expect(prompt).toMatch(/update the existing tag "walk" \(now frames 1-3\).*never add a second "walk" tag/);
+  });
+});
+
+describe("v1.1: palette rules", () => {
+  it("states a color limit up front and sizes the auto palette to it", () => {
+    const prompt = generatePrompt(fresh({ maxColors: 6 }));
+    expect(prompt).toMatch(/Color limit: at most 6 colors in the whole sprite \(all layers and frames together/);
+    expect(prompt).toMatch(/the bridge merges the closest colors/);
+    expect(prompt).toMatch(/choose a cohesive palette of at most 6 colors yourself/);
+    expect(generatePrompt(fresh({}))).not.toMatch(/Color limit/);
+    // Edits and chat mention it only when it is set, like every explicit option.
+    const existing = { ...fresh({ maxColors: 4 }), freshSprite: false, hasContent: true };
+    expect(chatPrompt(existing)).toMatch(/Color limit: at most 4 colors/);
+  });
+
+  it("lists a custom palette's colors", () => {
+    const prompt = generatePrompt(fresh({ palette: "custom", customPalette: ["#1a1c2c", "#5d275d"] }));
+    expect(prompt).toMatch(/Palette: only these 2 colors \(the user's own palette\): #1a1c2c #5d275d\. Don't introduce other colors\./);
+    expect(prompt).not.toMatch(/apply_palette|snaps every pixel/);
+  });
+
+  it("tells the model the bridge snaps to a forced palette instead of asking for apply_palette", () => {
+    const forced = generatePrompt(fresh({ palette: "endesga32", forcePalette: true }));
+    expect(forced).toMatch(/get_palette_preset \{"id":"endesga32"\} and use only its colors\. When you finish, the bridge snaps every pixel you drew/);
+    expect(forced).not.toMatch(/Finish with apply_palette/);
+    expect(generatePrompt(fresh({ palette: "endesga32" }))).toMatch(/Finish with apply_palette/);
+    expect(generatePrompt(fresh({ palette: "custom", customPalette: ["#000000", "#ffffff"], forcePalette: true }))).toMatch(
+      /#000000 #ffffff\. Don't introduce other colors\. When you finish, the bridge snaps/,
+    );
+    expect(generatePrompt(fresh({ palette: "current", forcePalette: true }))).toMatch(/don't introduce new colors\. When you finish, the bridge snaps/);
+    // A style with fixed colors gives "auto" something to snap to; plain "auto" has nothing.
+    expect(generatePrompt(fresh({ style: "gameboy", forcePalette: true }))).toMatch(/only the style's colors listed above\. When you finish, the bridge snaps/);
+    expect(generatePrompt(fresh({ forcePalette: true }))).not.toMatch(/snaps every pixel/);
+  });
+});
+
+describe("v1.1: tile view", () => {
+  it("asks for a seamless texture with the wrap-around workflow and the tiled check", () => {
+    const prompt = generatePrompt({
+      ...fresh({ view: "tile", background: "transparent" }, "mossy stone floor"),
+      info: spriteInfo(5, { width: 16, height: 16 }),
+    });
+    expect(prompt).toMatch(/View: a seamless tile/);
+    expect(prompt).toMatch(/Seamless tile:\n- The texture covers every pixel of the canvas: no transparency, no border/);
+    expect(prompt).toContain('transform_layer {"op":"shift","dx":8,"dy":8,"wrap":true,"frames":"all"}');
+    expect(prompt).toContain('{"op":"shift","dx":-8,"dy":-8,"wrap":true,"frames":"all"}');
+    expect(prompt).toContain('view_sprite {"tiled":true}');
+    expect(prompt).toMatch(/Background: none; the texture itself fills every pixel\./);
+    expect(prompt).not.toMatch(/Background: transparent/);
+    expect(prompt).toMatch(/Outline: never around the tile's edges/);
+    expect(prompt).toMatch(/there is no margin/);
+    expect(prompt).not.toMatch(/1-2 px margin/);
+    expect(prompt).toContain('pixel-art guide, "tiles"');
+  });
+
+  it("does not apply to directions, which define their own view", () => {
+    const prompt = directionsPrompt(fresh({ view: "tile" }), directionsPlan(4));
+    expect(prompt).not.toMatch(/Seamless tile|no margin|texture itself/);
+  });
+});
+
+describe("v1.1: style reference", () => {
+  it("puts the reference facts into generation and edit prompts", () => {
+    const reference = 'Style reference: "knight.aseprite" (sprite #7), frame 1, 32x32, attached as the last image.';
+    expect(generatePrompt({ ...fresh(), reference })).toContain(reference);
+    expect(batchItemPrompt({ ...fresh(), reference }, "sword", 1, 2)).toContain(reference);
+    const existing = { ...fresh(), freshSprite: false, hasContent: true, reference };
+    expect(chatPrompt(existing)).toContain(reference);
+    expect(editSelectionPrompt({ ...existing, selection: { x: 0, y: 0, width: 4, height: 4 } })).toContain(reference);
   });
 });

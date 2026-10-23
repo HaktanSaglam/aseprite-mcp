@@ -129,6 +129,17 @@ export class FakeGateway implements IAsepriteGateway {
     return structuredClone(this.addSprite({ width: options.width, height: options.height, frames }));
   }
 
+  /** Like the extension: onlyIfEmpty keeps a sprite with any opaque pixel. */
+  async closeSprite(sprite: number, options: { onlyIfEmpty?: boolean } = {}) {
+    this.log("closeSprite", sprite, options);
+    const found = this.sprites.get(sprite);
+    if (!found) throw new Error(`Sprite ${sprite} is not open anymore`);
+    if (options.onlyIfEmpty && found.frames.some((f) => f.data.some((v, i) => i % 4 === 3 && v > 0))) return false;
+    this.sprites.delete(sprite);
+    if (this.active === sprite) this.active = undefined;
+    return true;
+  }
+
   async spriteOp(op: unknown, ref?: SpriteRef) {
     this.log("spriteOp", op, ref);
     return structuredClone(this.sprite(ref).info);
@@ -174,8 +185,21 @@ export class FakeGateway implements IAsepriteGateway {
     return { rect, image };
   }
 
+  /** Pastes into the frame's (single, flattened) image; layers are not modelled. */
   async writeImages(writes: WriteImageRequest[], ref?: SpriteRef) {
     this.log("writeImages", writes, ref);
+    const sprite = this.sprite(ref);
+    for (const w of writes) {
+      const frame = sprite.frames[(w.frame ?? sprite.info.activeFrame) - 1];
+      for (let y = 0; y < w.image.height; y++) {
+        for (let x = 0; x < w.image.width; x++) {
+          const tx = w.x + x;
+          const ty = w.y + y;
+          if (tx < 0 || ty < 0 || tx >= frame.width || ty >= frame.height) continue;
+          frame.data.set(w.image.data.subarray((y * w.image.width + x) * 4, (y * w.image.width + x) * 4 + 4), (ty * frame.width + tx) * 4);
+        }
+      }
+    }
   }
 
   async readSelection(request: Partial<Rect> & SpriteRef) {
@@ -204,6 +228,18 @@ export class FakeGateway implements IAsepriteGateway {
       }
     }
     if (op.op === "duration") for (const f of sprite.info.frames) f.durationMs = op.durationMs;
+    if (op.op === "copy_cel") {
+      const source = sprite.frames[op.from - 1];
+      const copy = createRgbaImage(source.width, source.height);
+      for (let y = 0; y < source.height; y++) {
+        for (let x = 0; x < source.width; x++) {
+          const sx = op.flip === "horizontal" ? source.width - 1 - x : x;
+          const sy = op.flip === "vertical" ? source.height - 1 - y : y;
+          copy.data.set(source.data.subarray((sy * source.width + sx) * 4, (sy * source.width + sx) * 4 + 4), (y * source.width + x) * 4);
+        }
+      }
+      sprite.frames[op.to - 1] = copy;
+    }
     return { frames: sprite.info.frames.length };
   }
 

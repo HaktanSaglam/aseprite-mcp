@@ -35,13 +35,20 @@ export const PRESET_PALETTE_IDS = [
   "1bit",
 ] as const;
 export type PresetPaletteId = (typeof PRESET_PALETTE_IDS)[number];
-export type PaletteId = "auto" | "current" | PresetPaletteId;
+export type PaletteId = "auto" | "current" | "custom" | PresetPaletteId;
 
-export const VIEWS = ["front", "side", "three_quarter", "top_down", "isometric"] as const;
+export const VIEWS = ["front", "side", "three_quarter", "top_down", "isometric", "tile"] as const;
 export type View = (typeof VIEWS)[number];
 
 export const ANIMATION_PRESETS = ["idle", "walk", "run", "jump", "attack", "hurt", "death", "custom"] as const;
 export type AnimationPreset = (typeof ANIMATION_PRESETS)[number];
+
+/** new: animate from one pose; between: in-betweens of two key frames; continue: extend kept frames. */
+export const ANIMATION_MODES = ["new", "between", "continue"] as const;
+export type AnimationMode = (typeof ANIMATION_MODES)[number];
+
+export const MAX_COLOR_LIMIT = 64;
+const MAX_FRAME_NUMBER = 10_000;
 
 /** Used when the UI sends only a preset: lengths and timings a pixel artist would start from. */
 export const ANIMATION_DEFAULTS: Record<AnimationPreset, { frames: number; frameMs: number; loop: boolean }> = {
@@ -77,6 +84,11 @@ function looseObject(value: unknown, dropEmptyStrings: boolean): unknown {
 const optionsObject = <T extends z.ZodType>(schema: T) => z.preprocess((v) => looseObject(v, true), schema);
 const nullAsMissing = <T extends z.ZodType>(schema: T) => z.preprocess((v) => (v === null ? undefined : v), schema);
 
+// A cleared reference or palette arrives as an empty Lua table ([] or {}): "not set".
+const isEmptyTable = (v: unknown) =>
+  (Array.isArray(v) && v.length === 0) || (isPlainObject(v) && Object.keys(v).length === 0);
+const emptyAsMissing = <T extends z.ZodType>(schema: T) => z.preprocess((v) => (isEmptyTable(v) ? undefined : v), schema);
+
 const RectSchema = z.object({
   x: z.number().int(),
   y: z.number().int(),
@@ -91,12 +103,19 @@ const SizeSchema = optionsObject(
   }),
 );
 
+const FrameNumberSchema = z.number().int().min(1).max(MAX_FRAME_NUMBER);
+
 const AnimationSchema = optionsObject(
   z.object({
     preset: z.enum(ANIMATION_PRESETS).default("custom"),
     frames: z.number().int().min(2).max(16).optional(),
     frameMs: z.number().int().min(10).max(5000).optional(),
     loop: z.boolean().optional(),
+    allDirections: z.boolean().optional(),
+    mode: z.enum(ANIMATION_MODES).optional(),
+    fromFrame: FrameNumberSchema.optional(),
+    toFrame: FrameNumberSchema.optional(),
+    keepFrames: FrameNumberSchema.optional(),
   }),
 ).transform((a) => {
   const defaults = ANIMATION_DEFAULTS[a.preset];
@@ -105,8 +124,27 @@ const AnimationSchema = optionsObject(
     frames: a.frames ?? defaults.frames,
     frameMs: a.frameMs ?? defaults.frameMs,
     loop: a.loop ?? defaults.loop,
+    // Only present when sent, so a v1.0 request parses exactly as before.
+    ...(a.allDirections ? { allDirections: true } : {}),
+    ...(a.mode !== undefined ? { mode: a.mode } : {}),
+    ...(a.fromFrame !== undefined ? { fromFrame: a.fromFrame } : {}),
+    ...(a.toFrame !== undefined ? { toFrame: a.toFrame } : {}),
+    ...(a.keepFrames !== undefined ? { keepFrames: a.keepFrames } : {}),
   };
 });
+
+/** "#RRGGBB" or "rrggbb" → "#rrggbb". */
+const HexColorSchema = z
+  .string()
+  .regex(/^#?[0-9a-fA-F]{6}$/, 'Use "#rrggbb" colors')
+  .transform((c) => `#${c.replace(/^#/, "").toLowerCase()}`);
+
+const ReferenceSchema = optionsObject(
+  z.object({
+    sprite: z.number().int().positive(),
+    frame: FrameNumberSchema.optional(),
+  }),
+);
 
 export const ChatOptionsSchema = optionsObject(
   z.object({
@@ -114,7 +152,7 @@ export const ChatOptionsSchema = optionsObject(
     model: z.string().optional(),
     effort: z.enum(EFFORTS).optional(),
     style: z.enum(STYLE_IDS).optional(),
-    palette: z.enum(["auto", "current", ...PRESET_PALETTE_IDS]).optional(),
+    palette: z.enum(["auto", "current", "custom", ...PRESET_PALETTE_IDS]).optional(),
     size: SizeSchema.optional(),
     target: z.enum(["new_sprite", "new_layer", "active_layer"]).optional(),
     view: z.enum(VIEWS).optional(),
@@ -125,11 +163,22 @@ export const ChatOptionsSchema = optionsObject(
     background: z.enum(["transparent", "solid"]).optional(),
     animation: AnimationSchema.optional(),
     autoReview: z.boolean().optional(),
+    source: z.enum(["prompt", "current"]).optional(),
+    maxColors: z.number().int().min(2).max(MAX_COLOR_LIMIT).optional(),
+    forcePalette: z.boolean().optional(),
+    customPalette: emptyAsMissing(z.array(HexColorSchema).min(2).max(256).optional()),
+    reference: emptyAsMissing(ReferenceSchema.optional()),
   }),
 );
 
 export type ChatOptions = z.output<typeof ChatOptionsSchema>;
 export type AnimationOptions = NonNullable<ChatOptions["animation"]>;
+export type StyleReference = NonNullable<ChatOptions["reference"]>;
+
+export const animationMode = (animation: AnimationOptions): AnimationMode => animation.mode ?? "new";
+
+/** directions/variations start from the user's art instead of a description. */
+export const startsFromCurrent = (options: ChatOptions) => options.source === "current";
 
 /** The first chat window sent `model` at the top level and called edit_selection "redraw_selection". */
 function upgradeLegacyChatSend(value: unknown): unknown {
@@ -208,13 +257,19 @@ export function batchItems(options: ChatOptions): string[] {
  * any sprite is created or model started. Returns the message for the user, if any.
  */
 export function checkRequest(request: ChatSendRequest): string | undefined {
+  return checkAction(request) ?? checkPalette(request.options) ?? checkAnimation(request);
+}
+
+function checkAction(request: ChatSendRequest): string | undefined {
   const hasText = request.text.trim().length > 0;
   switch (request.action) {
     case "chat":
       return hasText ? undefined : "Type a message first.";
     case "generate":
-    case "directions":
       return hasText ? undefined : "Describe what to draw first.";
+    case "directions":
+      // From the current sprite the art is the description; text is an optional note.
+      return hasText || startsFromCurrent(request.options) ? undefined : "Describe what to draw first.";
     case "batch":
       return batchItems(request.options).length > 0
         ? undefined
@@ -222,4 +277,31 @@ export function checkRequest(request: ChatSendRequest): string | undefined {
     default:
       return undefined;
   }
+}
+
+function checkPalette(options: ChatOptions): string | undefined {
+  if (options.palette === "custom" && !options.customPalette) {
+    return 'Palette "Custom" needs its colors: paste 2-256 #rrggbb colors, or pick another palette.';
+  }
+  return undefined;
+}
+
+// Frame numbers that depend on the sprite are checked when its frames are known.
+function checkAnimation(request: ChatSendRequest): string | undefined {
+  const animation = request.options.animation;
+  if (request.action !== "animate" || !animation) return undefined;
+  const mode = animationMode(animation);
+  if (animation.allDirections && mode !== "new") {
+    return "All directions animates from each direction's pose; it can't be combined with in-betweens or continuing.";
+  }
+  if (mode === "between") {
+    if (animation.fromFrame === undefined || animation.toFrame === undefined) {
+      return "In-betweens need the two key frames: set From frame and To frame.";
+    }
+    if (animation.fromFrame === animation.toFrame) return "In-betweens need two different key frames.";
+  }
+  if (mode === "continue" && animation.keepFrames === undefined) {
+    return "Continue needs the number of frames to keep (Keep frames 1..k).";
+  }
+  return undefined;
 }

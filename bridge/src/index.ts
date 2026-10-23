@@ -1,5 +1,7 @@
 import { AsepriteSocket } from "./aseprite/AsepriteSocket.js";
 import { RpcAsepriteGateway } from "./aseprite/RpcAsepriteGateway.js";
+import { SpriteActivity } from "./aseprite/SpriteActivity.js";
+import { TrackingAsepriteGateway } from "./aseprite/TrackingAsepriteGateway.js";
 import { CanvasService } from "./canvas/CanvasService.js";
 import { ChatService } from "./chat/ChatService.js";
 import { GenerationService } from "./chat/GenerationService.js";
@@ -26,7 +28,10 @@ async function main(): Promise<void> {
     requestTimeoutMs: config.requestTimeoutMs,
   });
   await socket.start();
-  const gateway = new RpcAsepriteGateway(socket);
+  // Every change that reaches Aseprite with a sprite id is recorded, so a run knows its
+  // undo steps and drawn cels whether the model or the bridge made them.
+  const activity = new SpriteActivity();
+  const gateway = new TrackingAsepriteGateway(new RpcAsepriteGateway(socket), activity);
 
   // One script runner for all requests: it caches the compiled QuickJS WebAssembly module.
   const baseContext: ToolContext = { gateway, canvas: new CanvasService(gateway), scripts: new QuickJsScriptRunner() };
@@ -41,12 +46,13 @@ async function main(): Promise<void> {
   new ChatService({
     events: tapped ?? socket,
     registry,
-    singleRun: new SingleRunService({ gateway, mcpUrls: urls, sessions }),
+    singleRun: new SingleRunService({ gateway, mcpUrls: urls, sessions, activity }),
     generation: new GenerationService({
       gateway,
       mcpUrlFor: urls.forSprite,
       sessions,
       maxParallelRuns: config.maxParallelRuns,
+      activity,
     }),
     instantTools: new InstantToolService(serverFor),
     sessions,

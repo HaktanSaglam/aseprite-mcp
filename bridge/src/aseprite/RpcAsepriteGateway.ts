@@ -1,6 +1,7 @@
 import { decodeRaw, encodeRaw, type PixelTarget } from "../pixel/rawFormat.js";
 import type {
   IAsepriteGateway,
+  ISpriteCloser,
   ReadImageRequest,
   SelectionMask,
   WriteImageRequest,
@@ -25,7 +26,7 @@ import type {
 const FORMAT_BY_MODE = { rgb: "rgba", grayscale: "gray", indexed: "indexed" } as const;
 
 /** Typed Aseprite operations on top of the raw method/params channel. */
-export class RpcAsepriteGateway implements IAsepriteGateway {
+export class RpcAsepriteGateway implements IAsepriteGateway, ISpriteCloser {
   constructor(private readonly rpc: IAsepriteRpc) {}
 
   isConnected(): boolean {
@@ -49,6 +50,10 @@ export class RpcAsepriteGateway implements IAsepriteGateway {
       ...options,
       background: options.background?.replace(/^#/, ""),
     });
+  }
+
+  async closeSprite(sprite: number, options: { onlyIfEmpty?: boolean } = {}): Promise<boolean> {
+    return (await this.rpc.call<{ closed: boolean }>("close_sprite", { sprite, onlyIfEmpty: options.onlyIfEmpty })).closed;
   }
 
   spriteOp(op: SpriteOp, ref: SpriteRef = {}): Promise<SpriteInfo> {

@@ -28,11 +28,11 @@ Workflow:
 Selections: set_selection, then selectionOnly:true on drawing/effect calls.
 
 Tools by job:
-- document: get_sprite_info, create_sprite, list_sprites, select_sprite, edit_sprite, undo, redo, save_sprite, export_sprite
+- document: get_sprite_info, create_sprite, list_sprites, select_sprite, edit_sprite, undo, redo, save_sprite, export_sprite, import_image
 - drawing: draw_script, write_pixels, read_pixels, view_sprite, pixel_art_guide
 - structure: manage_layers, manage_frames, manage_tags, get_selection, set_selection
 - color: get_palette, set_palette, get_palette_preset, apply_palette, reduce_colors, replace_color, adjust_colors
-- effects: add_outline, remove_background, cleanup_pixels, transform_layer, drop_shadow, analyze_sprite
+- effects: add_outline, remove_background, cleanup_pixels, transform_layer, drop_shadow, analyze_sprite, normalize_pixel_art
 
 Quality rules: readable silhouette at 1x; one light direction (default top-left); hue-shifted
 ramps (cool shadows, warm highlights), never gray/black shading; 3-5 tones per material,

@@ -91,6 +91,15 @@ export interface IPaletteGateway {
   setPalette(colors: string[], ref?: SpriteRef): Promise<void>;
 }
 
+/**
+ * Cleaning up after a generation that failed or was stopped. Only the bridge's chat
+ * services close sprites; no MCP tool can, so it is not part of IAsepriteGateway.
+ */
+export interface ISpriteCloser {
+  /** Closes without asking to save; `onlyIfEmpty` keeps a sprite with any pixel. Resolves to whether it closed. */
+  closeSprite(sprite: number, options?: { onlyIfEmpty?: boolean }): Promise<boolean>;
+}
+
 /** Everything the MCP tools need from Aseprite, independent of how we talk to it. */
 export interface IAsepriteGateway
   extends ISpriteGateway,
