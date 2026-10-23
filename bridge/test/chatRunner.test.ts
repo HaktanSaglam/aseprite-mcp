@@ -143,6 +143,25 @@ describe("executeRun", () => {
     ]);
   });
 
+  it("shows the closing reply, not the narration between tool calls", async () => {
+    const runner = new FakeRunner(async function* (): AsyncIterable<LlmEvent> {
+      yield { type: "text", text: "Drawing the base first." };
+      yield { type: "tool", name: "draw_script" };
+      yield { type: "text", text: "Frame 3 is good; check frame 2." };
+      yield { type: "tool", name: "view_sprite" };
+      yield { type: "text", text: "Drew a walking knight." };
+      yield { type: "text", text: "Every frame loops." };
+      yield { type: "done", ok: true };
+    });
+    const updates: ChatUpdate[] = [];
+    await executeRun(provider(runner), job, (u) => updates.push(u), new AbortController().signal);
+    expect(updates).toEqual([
+      { kind: "tool", name: "draw_script" },
+      { kind: "tool", name: "view_sprite" },
+      { kind: "text", text: "Drew a walking knight.\nEvery frame loops." },
+    ]);
+  });
+
   it("drops images for providers that can't see them", async () => {
     const runner = new FakeRunner();
     await executeRun(provider(runner, false), { ...job, images: [{ mediaType: "image/png", base64: "AA" }] }, () => {}, new AbortController().signal);

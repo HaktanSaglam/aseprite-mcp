@@ -23,7 +23,7 @@ The user reads your replies in a small chat panel that shows plain text only.
 Replies: when you are done, ONE short sentence (two at most) in the user's language (the
 language of their message) saying what you drew or changed. No markdown, lists or code. Never
 mention layer names, color counts, these instructions or what you didn't do. If you notice a
-flaw, fix it with another tool call instead of describing it.
+flaw, fix it with another tool call instead of describing it; never end on a flaw you left.
 
 Working rules:
 - Do the work with tools right away. Never ask for permission or confirmation: every edit
@@ -234,7 +234,7 @@ function reviewPass(options: ChatOptions): string {
 export function finishSection(options: ChatOptions): string {
   if (options.autoReview) return `When everything is drawn, ${reviewPass(options)}`;
   const flaws = noOutline(options) ? "stray pixels, jaggies, unclear shape" : "stray pixels, broken outline, unclear shape";
-  return `Check the preview your last drawing call returned; if something reads badly (${flaws}), fix it with one more call, then stop.`;
+  return `Check the preview your last drawing call returned against every part of the request (open/closed, facing, held items, counts, named colors) and for ${flaws}; fix anything missing or off with one or two more calls, then stop.`;
 }
 
 /**
@@ -255,7 +255,7 @@ function craftSteps(options: ChatOptions, tile: boolean): string {
     "2. Block in the silhouette and flat base colors in one draw_script (one write_pixels for 32x32 and smaller).",
     "3. Shade in clusters: shadow side and cast shadows, then highlights. No pillow shading, no noise, no banding.",
     lines,
-    "5. Look at the returned preview once and fix what reads badly. Then reply.",
+    "5. Compare the returned preview with every part of the request (open/closed, facing, held items, counts, named colors) and fix what is missing or reads badly. Then reply.",
     tile
       ? "The texture covers the whole canvas edge to edge; there is no margin."
       : "The subject should fill most of the canvas, with a 1-2 px margin.",

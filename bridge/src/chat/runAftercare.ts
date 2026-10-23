@@ -18,6 +18,18 @@ export async function closeIfEmpty(gateway: ISpriteCloser, sprite: number): Prom
 }
 
 /**
+ * forcePalette with a preset or custom palette, before the run: it becomes the sprite
+ * palette, which the run's own undo steps then include. Best effort, like the snap after.
+ */
+export async function applyChosenPalette(enforcer: PaletteEnforcer, sprite: number, options: ChatOptions): Promise<void> {
+  try {
+    await enforcer.presetSpritePalette(sprite, options);
+  } catch (error) {
+    console.error(`[bridge] could not set the palette of sprite #${sprite}:`, error);
+  }
+}
+
+/**
  * maxColors / forcePalette after a successful run, reported in the chat. A failure is
  * reported, not thrown: the art itself is finished.
  */

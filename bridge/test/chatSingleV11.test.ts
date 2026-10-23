@@ -276,7 +276,7 @@ describe("SingleRunService: animating every direction", () => {
     const runs = h.runner.requests.length;
     const again = await h.single.execute(animate, h.run());
     expect(h.runner.requests).toHaveLength(runs);
-    expect(again.undo).toEqual({ sprite, steps: 0 });
+    expect(again.undo).toBeUndefined(); // nothing changed, nothing to undo
     expect(statuses(h.updates).at(-1)).toBe(
       "Every direction is already animated (walk_down, walk_right, walk_up, walk_left). Delete a tag to animate it again.",
     );
