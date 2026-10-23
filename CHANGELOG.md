@@ -74,6 +74,8 @@ art directly inside Aseprite, with every change a single undo step.
 
 ### Changed
 
+- Licensed under the [PolyForm Noncommercial License 1.0.0](LICENSE): free for personal, hobby,
+  research and other noncommercial use; commercial use needs a separate license.
 - Renamed from *Claude Pixel Bridge* (private preview) to **Aseprite MCP**. The extension id is
   now `aseprite-mcp` and its menu lives under Edit > FX > Aseprite MCP; the installers offer to
   remove the old `claude-pixel-bridge` extension.
