@@ -24,13 +24,21 @@ return function(U)
 
   -- copy_cel without a layer copies every layer it may write: locked layers (or layers
   -- in a locked group) and tilemaps are skipped instead of failing the whole copy.
-  local function copyTargets(sprite, name)
-    if name ~= nil then return { U.checkWritable(U.requireLayer(sprite, name)) } end
-    local layers = {}
+  -- includeLocked also copies locked layers, never flipped, the way a new frame copies
+  -- every layer: a locked ground or shadow stays put while the character turns.
+  -- Returns the layers and, per layer, whether it is only carried over (locked).
+  local function copyTargets(sprite, name, includeLocked)
+    if name ~= nil then return { U.checkWritable(U.requireLayer(sprite, name)) }, {} end
+    local layers, carried = {}, {}
     U.eachLayer(sprite.layers, function(layer)
-      if layer.isImage and pcall(U.checkWritable, layer) then layers[#layers + 1] = layer end
+      if not layer.isImage or layer.isTilemap then return end
+      local writable = pcall(U.checkWritable, layer)
+      if writable or includeLocked then
+        layers[#layers + 1] = layer
+        carried[layer] = not writable
+      end
     end)
-    return layers
+    return layers, carried
   end
 
   -- The cel's image (a copy) and where it goes, mirrored across the whole canvas so a
@@ -87,11 +95,12 @@ return function(U)
       if p.flip ~= nil and not FLIPS[p.flip] then
         error("Unknown flip: " .. tostring(p.flip) .. " (horizontal or vertical)")
       end
-      for _, layer in ipairs(copyTargets(sprite, p.layer)) do
+      local layers, carried = copyTargets(sprite, p.layer, p.includeLocked == true)
+      for _, layer in ipairs(layers) do
         local source = layer:cel(from)
         if source then
           -- Read before newCel: with from == to it replaces (deletes) the source cel.
-          local image, pos = placedImage(sprite, source, p.flip)
+          local image, pos = placedImage(sprite, source, (not carried[layer]) and p.flip or nil)
           local opacity = source.opacity
           local copy = sprite:newCel(layer, to, image, pos)
           copy.opacity = opacity

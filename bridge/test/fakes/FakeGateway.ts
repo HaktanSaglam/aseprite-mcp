@@ -497,7 +497,7 @@ export class FakeGateway implements IAsepriteGateway, ISpriteCloser {
       sprite.state.activeFrame = checkFrame(sprite.state, op.frame);
       this.activeId = sprite.id;
     } else if (op.op === "copy_cel") {
-      this.mutate(sprite, (s) => copyCel(s, op, this.copyTargets(s, op.layer)));
+      this.mutate(sprite, (s) => copyCel(s, op, this.copyTargets(s, op.layer, op.includeLocked)));
     } else {
       this.mutate(sprite, (s) => applyFrameOp(s, op));
     }
@@ -665,8 +665,8 @@ export class FakeGateway implements IAsepriteGateway, ISpriteCloser {
   }
 
   /** The named layer, or every editable image layer (locked ones are skipped, like the extension). */
-  private copyTargets(s: FakeSpriteState, name: string | undefined): FakeLayer[] {
-    if (name === undefined) return this.entries(s).map((e) => e.layer).filter((l) => !l.isGroup && l.editable);
+  private copyTargets(s: FakeSpriteState, name: string | undefined, includeLocked = false): FakeLayer[] {
+    if (name === undefined) return this.entries(s).map((e) => e.layer).filter((l) => !l.isGroup && (l.editable || includeLocked));
     const { layer } = this.require(s, name);
     if (layer.isGroup) throw new Error(`Layer is a group: ${layer.name}`);
     if (!layer.editable) throw new Error(`Layer is locked: ${layer.name}`);
@@ -888,8 +888,10 @@ function copyCel(s: FakeSpriteState, op: Extract<FrameOp, { op: "copy_cel" }>, l
     const copy = createRgbaImage(source.width, source.height);
     for (let y = 0; y < source.height; y++) {
       for (let x = 0; x < source.width; x++) {
-        const sx = op.flip === "horizontal" ? source.width - 1 - x : x;
-        const sy = op.flip === "vertical" ? source.height - 1 - y : y;
+        // Locked layers are only carried over, never flipped.
+        const flip = layer.editable ? op.flip : undefined;
+        const sx = flip === "horizontal" ? source.width - 1 - x : x;
+        const sy = flip === "vertical" ? source.height - 1 - y : y;
         const o = (sy * source.width + sx) * 4;
         copy.data.set(source.data.subarray(o, o + 4), (y * source.width + x) * 4);
       }

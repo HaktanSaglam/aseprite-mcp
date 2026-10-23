@@ -281,7 +281,8 @@ export class DirectionalAnimator {
     await gateway.frameOp({ op: "add", after: last, count: pose === undefined ? animation.frames : 1, durationMs }, ref);
     for (const tag of info.tags) if (tag.to === last) await gateway.tagOp({ op: "update", name: tag.name, to: last }, ref);
     if (pose === undefined) return span;
-    await gateway.frameOp({ op: "copy_cel", from: pose, to: span.first }, ref);
+    // includeLocked: a locked layer (ground, shadow) must reach every new frame too.
+    await gateway.frameOp({ op: "copy_cel", from: pose, to: span.first, includeLocked: true }, ref);
     if (animation.frames > 1) {
       await gateway.frameOp({ op: "add", after: span.first, count: animation.frames - 1, copy: true, durationMs }, ref);
     }
@@ -290,7 +291,10 @@ export class DirectionalAnimator {
 
   private async mirror(sprite: number, source: Span, span: Span): Promise<void> {
     for (let i = 0; i <= span.last - span.first; i++) {
-      await this.deps.gateway.frameOp({ op: "copy_cel", from: source.first + i, to: span.first + i, flip: "horizontal" }, { sprite });
+      await this.deps.gateway.frameOp(
+        { op: "copy_cel", from: source.first + i, to: span.first + i, flip: "horizontal", includeLocked: true },
+        { sprite },
+      );
     }
   }
 

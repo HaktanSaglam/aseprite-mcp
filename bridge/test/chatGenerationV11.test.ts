@@ -76,6 +76,15 @@ describe("GenerationService: closing sprites that came to nothing", () => {
     expect(h.runner.requests).toHaveLength(1); // no mirror, no fix-up after a failed first run
   });
 
+  it("closes a directions sprite made from the user's design when the model added nothing", async () => {
+    const { h, user } = userDesign();
+    h.runner.script = h.drawing(() => {}, () => false);
+    const request = h.request({ action: "directions", sprite: user, options: { source: "current" } });
+    expect((await h.generation.execute(request, h.run())).ok).toBe(false);
+    // Frame 1 holds the bridge's copy of the user's frame, yet the tab goes.
+    expect(h.fake.isOpen(h.claimed[0])).toBe(false);
+  });
+
   it("closes only the variations whose job failed or never ran", async () => {
     const h = v11Harness(1);
     let started = 0;

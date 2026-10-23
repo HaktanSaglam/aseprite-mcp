@@ -601,6 +601,19 @@ test("copy_cel rejects bad frames, flips and layers", function()
   call("frame_op", { op = "copy_cel", from = 1, to = 2 })
 end)
 
+test("copy_cel includeLocked carries locked layers over unflipped", function()
+  local info = call("create_sprite", { width = 3, height = 1, frames = 2 })
+  call("write_image", { x = 0, y = 0, width = 1, height = 1, frame = 1, layer = "Ground", format = "rgba", data = GREEN })
+  call("write_image", { x = 0, y = 0, width = 1, height = 1, frame = 1, layer = "Body", format = "rgba", data = RED })
+  call("layer_op", { op = "update", name = "Ground", editable = false })
+  call("frame_op", { op = "copy_cel", from = 1, to = 2, flip = "horizontal" })
+  eq(pixelAt(info.id, "Body", 2, 2, 0), RED, "unlocked layer mirrored")
+  eq(pixelAt(info.id, "Ground", 2, 0, 0), CLEAR, "locked layer skipped by default")
+  call("frame_op", { op = "copy_cel", from = 1, to = 2, flip = "horizontal", includeLocked = true })
+  eq(pixelAt(info.id, "Ground", 2, 0, 0), GREEN, "locked layer carried over, not flipped")
+  eq(pixelAt(info.id, "Body", 2, 2, 0), RED, "unlocked layer still mirrored")
+end)
+
 print(string.format("%d passed, %d failed", passed, failed))
 -- os.exit is disabled in Aseprite's Lua; a raised error makes the run fail instead.
 if failed > 0 then error(failed .. " test(s) failed") end

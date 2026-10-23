@@ -182,16 +182,23 @@ export class GenerationService implements IChatRequestHandler {
     run.claimSprite?.(created.id);
     const watch = this.deps.activity.watch(created.id);
     let outcome: RequestOutcome = { ok: false };
+    // Undo steps once the bridge's own setup (tags, the copy of the user's frame) is done.
+    let setupSteps: number | undefined;
     try {
       await applyChosenPalette(this.enforcer, created.id, request.options);
       const plan: DirectionsPlan = { directions: order, mirrors: mirrorPairs(order), fromCurrent: source !== undefined };
-      outcome = await this.drawDirections(request, run, created, plan, source, style);
+      outcome = await this.drawDirections(request, run, created, plan, source, style, () => {
+        setupSteps = watch.undoSteps;
+      });
       if (outcome.ok && !run.signal.aborted) {
         await enforceColorRules(this.enforcer, created.id, watch.drawnCels, request.options, run.sink);
       }
     } finally {
+      // The bridge's copy of the user's frame isn't "drawn": without anything the model
+      // added, the tab is closed although it has pixels.
+      const nothingDrawn = setupSteps !== undefined && watch.undoSteps <= setupSteps;
       watch.close();
-      if (!outcome.ok) await closeIfEmpty(this.deps.gateway, created.id);
+      if (!outcome.ok) await closeIfEmpty(this.deps.gateway, created.id, nothingDrawn);
     }
     return outcome;
   }
@@ -203,6 +210,7 @@ export class GenerationService implements IChatRequestHandler {
     plan: DirectionsPlan,
     source: SourceDesign | undefined,
     style: LoadedReference | undefined,
+    onSetupDone: () => void,
   ): Promise<RequestOutcome> {
     const { gateway, sessions } = this.deps;
     const ref = { sprite: created.id };
@@ -215,6 +223,7 @@ export class GenerationService implements IChatRequestHandler {
       const layer = created.layers.find((l) => !l.isGroup)?.path ?? "Layer 1";
       await gateway.writeImages([{ x: 0, y: 0, image: source.image, frame: 1, layer }], ref);
     }
+    onSetupDone();
     const sees = run.provider.info.supportsImages;
     const snapshot = source
       ? await captureCanvas(gateway, created.id, { preview: sees ? "always" : "never", palette: request.options.palette === "current" })

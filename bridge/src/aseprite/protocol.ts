@@ -116,7 +116,8 @@ export type FrameOp =
   | { op: "duration"; frames?: number[]; durationMs: number }
   | { op: "activate"; frame: number }
   /** One layer's cel (default: every writable image layer) from `from` to `to`, optionally mirrored. */
-  | { op: "copy_cel"; from: number; to: number; layer?: string; flip?: FlipDirection };
+  /** includeLocked: locked layers are copied too (never flipped), like a new frame copies every layer. */
+  | { op: "copy_cel"; from: number; to: number; layer?: string; flip?: FlipDirection; includeLocked?: boolean };
 
 export type TagOp =
   | {

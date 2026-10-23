@@ -241,6 +241,20 @@ describe("SingleRunService: animating every direction", () => {
     expect(outcome.undo).toEqual({ sprite, steps: 4 * 5 + 1 });
   });
 
+  it("carries a locked layer into every animated frame, unmirrored", async () => {
+    const { h, sprite } = directionsSprite();
+    for (let frame = 1; frame <= 4; frame++) {
+      h.fake.fillRect({ sprite, layer: "Ground", frame, x: 0, y: 0, width: 1, height: 1, color: "#123456" });
+    }
+    await h.fake.layerOp({ op: "update", name: "Ground", editable: false }, { sprite });
+    h.runner.script = h.drawing(() => {});
+    expect((await h.single.execute(h.request({ action: "animate", sprite, options: { animation: walk } }), h.run())).ok).toBe(true);
+    // Frames 5-12 are walk_down, walk_right, walk_up and the mirrored walk_left.
+    for (let frame = 5; frame <= 12; frame++) {
+      expect(h.fake.pixel("Ground", 0, 0, frame, sprite), `frame ${frame}`).toEqual([0x12, 0x34, 0x56, 255]);
+    }
+  });
+
   it("stops between directions and continues where it stopped", async () => {
     const { h, sprite } = directionsSprite();
     let stopOnce = true;
