@@ -2,9 +2,14 @@ import type { Rect } from "../aseprite/protocol.js";
 import { formatHex, labDistance, rgbToOklab, type Lab } from "./color.js";
 import { dominantBorderColors } from "./effects/background.js";
 import { findNoise, findOrphans } from "./effects/cleanup.js";
+import { assessQuality, type QualityIssue } from "./quality/index.js";
 import type { RgbaImage } from "./RgbaImage.js";
 
 export interface ImageAnalysis {
+  /** 0-100 pixel-art quality: 100 = none of the checked problems. */
+  score: number;
+  /** The worst problems (at most 5), each with where it is and the tool that fixes it. */
+  issues: QualityIssue[];
   width: number;
   height: number;
   /** Pixels with any alpha. */
@@ -65,8 +70,21 @@ export function analyzeImage(image: RgbaImage): ImageAnalysis {
   const colors = [...counts].sort((p, q) => q[1] - p[1] || p[0] - q[0]);
   const hexOf = (key: number) => formatHex(key >>> 24, (key >>> 16) & 255, (key >>> 8) & 255, key & 255);
   const border = dominantBorderColors(image, 0)[0];
+  const orphans = findOrphans(image, 1);
+  const noise = findNoise(image, "similar").map((n) => n.index);
+  // Semi-transparent variants are an alpha problem (reported as such), not extra colors to merge.
+  const duplicates = nearDuplicates(colors.map(([key]) => key).filter((key) => (key & 255) === 255), hexOf);
+  const quality = assessQuality(image, {
+    orphans,
+    noise,
+    uniqueColors: colors.length,
+    nearDuplicates: duplicates.pairs,
+    nearDuplicateCount: duplicates.count,
+  });
 
   const analysis: ImageAnalysis = {
+    score: quality.score,
+    issues: quality.issues,
     width,
     height,
     visiblePixels: visible,
@@ -74,9 +92,9 @@ export function analyzeImage(image: RgbaImage): ImageAnalysis {
     bounds: maxX < 0 ? null : { x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1 },
     uniqueColors: colors.length,
     topColors: colors.slice(0, TOP_COLORS).map(([key, count]) => ({ color: hexOf(key), count })),
-    orphanPixels: findOrphans(image, 1).length,
-    noisePixels: findNoise(image, "similar").length,
-    nearDuplicateColors: nearDuplicates(colors.map(([key]) => key), hexOf),
+    orphanPixels: orphans.length,
+    noisePixels: noise.length,
+    nearDuplicateColors: duplicates.pairs,
     borderColor: border && border.share >= BACKGROUND_BORDER_SHARE
       ? { color: formatHex(...border.color), share: Math.round(border.share * 100) / 100 }
       : undefined,
@@ -86,8 +104,9 @@ export function analyzeImage(image: RgbaImage): ImageAnalysis {
   return analysis;
 }
 
-function nearDuplicates(keys: number[], hexOf: (key: number) => string): [string, string][] {
-  if (keys.length > MAX_COLORS_FOR_PAIRS) return [];
+/** The closest nearly identical color pairs (more common color first) and how many there are. */
+function nearDuplicates(keys: number[], hexOf: (key: number) => string): { pairs: [string, string][]; count: number } {
+  if (keys.length > MAX_COLORS_FOR_PAIRS) return { pairs: [], count: 0 };
   const labs: Lab[] = keys.map((k) => rgbToOklab(k >>> 24, (k >>> 16) & 255, (k >>> 8) & 255));
   const pairs: { pair: [string, string]; distance: number }[] = [];
   for (let i = 0; i < keys.length; i++) {
@@ -96,10 +115,13 @@ function nearDuplicates(keys: number[], hexOf: (key: number) => string): [string
       if (distance < NEAR_DUPLICATE_DISTANCE) pairs.push({ pair: [hexOf(keys[i]), hexOf(keys[j])], distance });
     }
   }
-  return pairs
-    .sort((p, q) => p.distance - q.distance)
-    .slice(0, MAX_PAIRS_REPORTED)
-    .map((p) => p.pair);
+  return {
+    pairs: pairs
+      .sort((p, q) => p.distance - q.distance)
+      .slice(0, MAX_PAIRS_REPORTED)
+      .map((p) => p.pair),
+    count: pairs.length,
+  };
 }
 
 /** Short, actionable hints that name the tool which fixes each problem. */

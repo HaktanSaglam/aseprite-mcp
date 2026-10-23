@@ -5,6 +5,7 @@ import { registerDocumentTools } from "./document.js";
 import { registerDrawScript } from "./drawScript.js";
 import { registerEffectTools } from "./effects.js";
 import { registerGuideTools } from "./guide.js";
+import { registerImportImage } from "./importImage.js";
 import { registerLayerTools } from "./layers.js";
 import { registerPaletteTools } from "./palette.js";
 import { registerPixelTools } from "./pixels.js";
@@ -16,6 +17,7 @@ export const TOOL_REGISTRARS: ToolRegistrar[] = [
   registerSpriteTools,
   registerDocumentTools,
   registerPixelTools,
+  registerImportImage,
   registerDrawScript,
   registerLayerTools,
   registerAnimationTools,

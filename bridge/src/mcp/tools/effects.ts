@@ -1,7 +1,7 @@
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import type { Rect } from "../../aseprite/protocol.js";
-import type { TransformResult } from "../../canvas/CanvasService.js";
+import { defaultLayerPath, resolveFrames, type TransformResult } from "../../canvas/CanvasService.js";
 import { analyzeImage } from "../../pixel/analyze.js";
 import { formatHex, parseHex, type Rgba } from "../../pixel/color.js";
 import { removeBackground } from "../../pixel/effects/background.js";
@@ -9,7 +9,11 @@ import { cleanupPixels } from "../../pixel/effects/cleanup.js";
 import { dropShadow } from "../../pixel/effects/dropShadow.js";
 import { outline } from "../../pixel/effects/outline.js";
 import { TRANSFORM_OPS, transformImage, transformSelection } from "../../pixel/effects/transform.js";
+import { normalizePixelArt, type NormalizeResult } from "../../pixel/normalize.js";
 import { storedColor } from "../../pixel/rawFormat.js";
+import { extractRegion, replaceRegion } from "../../pixel/region.js";
+import type { RgbaImage } from "../../pixel/RgbaImage.js";
+import { MAX_UNZOOM_SCALE } from "../../pixel/unzoom.js";
 import type { ToolRegistrar } from "../ToolContext.js";
 import { jsonResult } from "../toolResult.js";
 
@@ -104,6 +108,68 @@ export function describeTarget(layer: string | undefined, frames: number[]): str
 
 export function plural(n: number, word: string): string {
   return `${n} ${word}${n === 1 ? "" : "s"}`;
+}
+
+function percent(share: number): string {
+  return `${Math.round(share * 100)}%`;
+}
+
+// Below this share of edges on the grid a forced scale is probably wrong.
+const DOUBTFUL_FIT = 0.8;
+
+interface NormalizeContext {
+  area: Rect;
+  canvas: { width: number; height: number };
+  where: string;
+  run: EffectRun;
+  forced: boolean;
+  inSelection: boolean;
+}
+
+/** What normalize_pixel_art found and did, and the crop that finishes the job. */
+function normalizeSummary(result: NormalizeResult, { area, canvas, where, run, forced, inSelection }: NormalizeContext): string {
+  if (result.colorsBefore === 0) return `Nothing to normalize: ${where} is empty${inSelection ? " inside the selection" : ""}.`;
+  const { grid } = result;
+  const lines: string[] = [];
+  if (grid.scale > 1) {
+    const found = forced ? `Downscaled ${grid.scale}x` : `Detected ${grid.scale}x upscaling`;
+    lines.push(
+      `${found} (grid offset ${grid.offsetX}, ${grid.offsetY}; ${percent(grid.fit)} of the color edges on the grid): ` +
+        `${area.width}x${area.height} became ${result.width}x${result.height} at (${area.x}, ${area.y}) on ${where}.`,
+    );
+    if (grid.fit < DOUBTFUL_FIT) {
+      lines.push(
+        `Only ${percent(grid.fit)} of the edges line up with a ${grid.scale}px grid, so the art may be distorted: ` +
+          'check it with view_sprite; if it looks wrong, undo and try scale "auto".',
+      );
+    }
+  } else {
+    lines.push(
+      forced
+        ? `scale 1: no downscaling on ${where}.`
+        : `No integer upscaling found on ${where}: the art is already 1x or its pixels are not on a regular grid ` +
+            "(pass scale to force a factor).",
+    );
+  }
+
+  const steps: string[] = [];
+  if (result.denoised) steps.push("noisy source (JPEG-like): near-identical shades merged");
+  if (result.alphaSnapped > 0) steps.push(`${plural(result.alphaSnapped, "semi-transparent pixel")} snapped to on/off`);
+  if (result.palette) steps.push(`colors limited from ${result.colorsBefore} to ${result.colorsAfter}`);
+  if (result.removed > 0) steps.push(`${plural(result.removed, "isolated pixel")} removed`);
+  if (result.recolored > 0) steps.push(`${plural(result.recolored, "noise pixel")} recolored`);
+  const done = steps.join("; ");
+  if (done) lines.push(`${done[0].toUpperCase()}${done.slice(1)}.`);
+  lines.push(`Result: ${plural(result.colorsAfter, "color")}, ${plural(run.changed, "pixel")} changed.${snapNote(run)}`);
+
+  const shrank = result.width < canvas.width || result.height < canvas.height;
+  if (grid.scale > 1 && !inSelection && shrank) {
+    lines.push(
+      `The canvas is still ${canvas.width}x${canvas.height}: crop it with edit_sprite {action: "crop", x: 0, y: 0, ` +
+        `width: ${result.width}, height: ${result.height}} (crops every layer and frame).`,
+    );
+  }
+  return lines.join(" ");
 }
 
 // --- Effect tools ----------------------------------------------------------------------
@@ -316,13 +382,87 @@ export const registerEffectTools: ToolRegistrar = (server, { gateway, canvas }) 
   );
 
   server.registerTool(
+    "normalize_pixel_art",
+    {
+      title: "Normalize pixel art",
+      description:
+        "Turn upscaled or imported 'pixel-style' art into real 1x pixel art: detects the upscale factor and grid " +
+        "offset (a 4x screenshot, an image-model render on a pixel grid; JPEG noise is tolerated), shrinks every " +
+        "block to its dominant color and writes the result at the top-left of the layer (of the selection with " +
+        "selectionOnly); the canvas keeps its size, crop it with the edit_sprite call the result names. Then " +
+        "snaps alpha, limits colors (maxColors) and removes stray pixels. Use right after import_image or on art " +
+        "pasted at the wrong scale; already-1x art only gets the clean-up steps. All frames share one grid and " +
+        "palette. One undo step.",
+      inputSchema: {
+        scale: z
+          .union([z.literal("auto"), z.number().int().min(1).max(MAX_UNZOOM_SCALE)])
+          .default("auto")
+          .describe('"auto" detects the factor; a number forces it (1 = no downscaling, only the clean-up steps).'),
+        maxColors: z
+          .number()
+          .int()
+          .min(2)
+          .max(64)
+          .optional()
+          .describe("Hard color limit after downscaling, e.g. 16. Omit to keep every color."),
+        binaryAlpha: z
+          .boolean()
+          .default(true)
+          .describe("Snap semi-transparent pixels to opaque (alpha >= 128) or transparent."),
+        cleanup: z
+          .boolean()
+          .default(true)
+          .describe("Afterwards remove isolated single pixels and near-identical single-pixel noise."),
+        ...targetArgs,
+      },
+    },
+    async ({ scale, maxColors, binaryAlpha, cleanup, layer, frames, selectionOnly }) => {
+      // Pinned, so the frames read for the shared grid are the ones the edit writes.
+      const info = await gateway.getSpriteInfo();
+      const ref = { sprite: info.id };
+      const targetLayer = layer ?? defaultLayerPath(info);
+      const frameList = resolveFrames(frames, info);
+      const selection = selectionOnly ? await canvas.selectionArea(ref) : undefined;
+      const area = selection?.bounds ?? { x: 0, y: 0, width: info.width, height: info.height };
+      const options = { scale, maxColors, binaryAlpha, cleanup };
+      const regionOf = (image: RgbaImage) => extractRegion(image, area, selection?.contains);
+
+      let result: NormalizeResult | undefined;
+      if (frameList.length > 1) {
+        // One grid and palette for every frame, so an animation stays aligned and doesn't flicker.
+        const images: RgbaImage[] = [];
+        for (const frame of frameList) {
+          images.push(regionOf((await gateway.readImage({ frame, layer: targetLayer, ...ref })).image));
+        }
+        result = normalizePixelArt(images, options);
+      }
+      const run = await canvas.transform({ layer: targetLayer, frames: frameList, selectionOnly, ...ref }, (image, frame) => {
+        result ??= normalizePixelArt([regionOf(image)], options);
+        return replaceRegion(image, area, result.images[frameList.indexOf(frame)]);
+      });
+      return textResult(
+        normalizeSummary(result!, {
+          area,
+          canvas: info,
+          where: describeTarget(layer, run.frames),
+          run,
+          forced: scale !== "auto",
+          inSelection: selection !== undefined,
+        }),
+      );
+    },
+  );
+
+  server.registerTool(
     "analyze_sprite",
     {
       title: "Analyze sprite",
       description:
-        "Check art for common pixel-art problems: color count, nearly identical colors, isolated and noise pixels, " +
-        "semi-transparent pixels, a solid background, and where the content sits (bounds). Returns stats plus " +
-        "suggestions naming the tool that fixes each problem. Use after drawing or importing.",
+        "Score pixel-art quality 0-100 and list the worst problems (at most 5), each with a pixel (x, y) or region " +
+        "and the tool that fixes it (fixWith): stray pixels, outline gaps, doubled/jaggy outline corners, banding, " +
+        "pillow shading, low contrast, anti-aliasing against transparency, too many or near-duplicate colors. Also " +
+        "returns color stats, content bounds and a detected solid background. Use after drawing or importing; fix " +
+        "the first issues, then check again (clean art scores 85+).",
       inputSchema: {
         layer: z.string().optional().describe("Analyze one layer. Omit to analyze the visible, flattened sprite."),
         frame: z.number().int().min(1).optional().describe("1-based. Defaults to the active frame."),

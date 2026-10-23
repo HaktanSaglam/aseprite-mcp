@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, extname, isAbsolute, resolve } from "node:path";
 
@@ -9,6 +9,8 @@ export interface PathProbe {
   kind(path: string): "file" | "dir" | null;
   /** A small text file's content, or null when it can't be read (missing, too big...). */
   readText?(path: string): string | null;
+  /** Where `path` really points after following symlinks, or null when it can't be resolved. */
+  realPath?(path: string): string | null;
 }
 
 // Sprite-sheet JSON is a few hundred bytes per frame; a much bigger file is not one.
@@ -24,6 +26,13 @@ export const nodePathProbe: PathProbe = {
     try {
       if (statSync(path).size > MAX_JSON_BYTES) return null;
       return readFileSync(path, "utf8");
+    } catch {
+      return null;
+    }
+  },
+  realPath: (path) => {
+    try {
+      return realpathSync(path);
     } catch {
       return null;
     }
@@ -51,29 +60,9 @@ export interface OutputPathRules {
  */
 export function resolveOutputPath(raw: string, rules: OutputPathRules, probe: PathProbe = nodePathProbe): string {
   const label = rules.label ?? "path";
-  const trimmed = raw.trim();
-  if (!trimmed) throw new Error(`${label} must not be empty`);
-  // Checked before any file-system probe: on Windows merely looking at \\host\share
-  // opens an SMB connection that sends the user's credentials to that host.
-  if (isNetworkPath(trimmed)) {
-    throw new Error(`${label} must be on this computer; network paths like "${trimmed}" are not allowed`);
-  }
-
-  const expanded = expandHome(trimmed, probe, label);
-  if (!isAbsolute(expanded)) {
-    throw new Error(
-      `${label} must be absolute (e.g. ~/Desktop/hero${rules.extensions[0] ?? ""}); got "${raw}"`,
-    );
-  }
-  const path = resolve(expanded);
+  const path = absoluteUserPath(raw, rules.extensions, label, probe);
   const isCurrent = rules.currentFile !== undefined && isAbsolute(rules.currentFile) && resolve(rules.currentFile) === path;
-
-  const ext = extname(path).toLowerCase();
-  if (!rules.extensions.includes(ext)) {
-    throw new Error(
-      `${label} must end with ${rules.extensions.join(", ")}; got "${ext || "no extension"}" in "${path}"`,
-    );
-  }
+  const ext = requireExtension(path, rules.extensions, label);
 
   const hidden = hiddenSegment(path);
   if (hidden !== undefined && !isCurrent) {
@@ -99,6 +88,75 @@ export function resolveOutputPath(raw: string, rules: OutputPathRules, probe: Pa
     throw new Error(`"${path}" already exists; pass overwrite: true to replace it or choose another name`);
   }
   return path;
+}
+
+export interface InputPathRules {
+  /** Lower-case extensions including the dot, e.g. [".png"]. */
+  extensions: readonly string[];
+  /** What the path is for, used in error messages. */
+  label?: string;
+}
+
+/**
+ * Validates a file the bridge reads on the model's behalf. Same rules as for writing
+ * (absolute or ~/, local, an allowed extension) plus: the file must exist, and neither
+ * the path nor where its symlinks lead may be inside a hidden folder, so a model can't
+ * be talked into reading app settings or keys. Returns the normalized absolute path.
+ */
+export function resolveInputPath(raw: string, rules: InputPathRules, probe: PathProbe = nodePathProbe): string {
+  const label = rules.label ?? "path";
+  const path = absoluteUserPath(raw, rules.extensions, label, probe);
+  requireExtension(path, rules.extensions, label);
+  const hidden = hiddenSegment(path);
+  if (hidden !== undefined) {
+    throw new Error(
+      `${label} "${path}" is inside "${hidden}", a hidden name where apps keep their settings; ` +
+        "move the file to a normal folder such as ~/Desktop or ~/Pictures",
+    );
+  }
+
+  const kind = probe.kind(path);
+  if (kind === null) throw new Error(`"${path}" does not exist; check the name and folder (absolute, or ~/ for home)`);
+  if (kind === "dir") throw new Error(`"${path}" is a folder; ${label} must name a ${rules.extensions.join("/")} file`);
+
+  const real = probe.realPath?.(path);
+  if (real && real !== path) {
+    if (isNetworkPath(real)) throw new Error(`${label} "${path}" links to the network path "${real}"; it is not read`);
+    const realHidden = hiddenSegment(real);
+    if (realHidden !== undefined) {
+      throw new Error(`${label} "${path}" links to "${real}" inside the hidden "${realHidden}"; it is not read`);
+    }
+    requireExtension(real, rules.extensions, label);
+  }
+  return path;
+}
+
+/**
+ * Trims, refuses network paths, expands "~/" and requires an absolute path; returns it
+ * normalized (".." resolved).
+ */
+function absoluteUserPath(raw: string, extensions: readonly string[], label: string, probe: PathProbe): string {
+  const trimmed = raw.trim();
+  if (!trimmed) throw new Error(`${label} must not be empty`);
+  // Checked before any file-system probe: on Windows merely looking at \\host\share
+  // opens an SMB connection that sends the user's credentials to that host.
+  if (isNetworkPath(trimmed)) {
+    throw new Error(`${label} must be on this computer; network paths like "${trimmed}" are not allowed`);
+  }
+  const expanded = expandHome(trimmed, probe, label);
+  if (!isAbsolute(expanded)) {
+    throw new Error(`${label} must be absolute (e.g. ~/Desktop/hero${extensions[0] ?? ""}); got "${raw}"`);
+  }
+  return resolve(expanded);
+}
+
+/** The path's lower-case extension, which must be one of `extensions`. */
+function requireExtension(path: string, extensions: readonly string[], label: string): string {
+  const ext = extname(path).toLowerCase();
+  if (!extensions.includes(ext)) {
+    throw new Error(`${label} must end with ${extensions.join(", ")}; got "${ext || "no extension"}" in "${path}"`);
+  }
+  return ext;
 }
 
 /** UNC and device paths: \\host\share, //host/share, \\?\..., \\.\... */
