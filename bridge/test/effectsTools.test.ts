@@ -242,6 +242,7 @@ const TOOLS = [
   "cleanup_pixels",
   "transform_layer",
   "drop_shadow",
+  "normalize_pixel_art",
   "analyze_sprite",
   "reduce_colors",
   "apply_palette",

@@ -1,10 +1,11 @@
+import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import type { IPaletteGateway, SpriteRef, WriteImageRequest } from "../../aseprite/AsepriteGateway.js";
-import { defaultLayerPath, resolveFrames } from "../../canvas/CanvasService.js";
+import { defaultLayerPath, resolveFrames, type CanvasService, type FrameSelector } from "../../canvas/CanvasService.js";
 import { compose, type PixelFilter } from "../../pixel/composite.js";
 import { formatHex, parseHex } from "../../pixel/color.js";
 import { adjustColors, hasAdjustments } from "../../pixel/effects/adjustColors.js";
-import { replaceColor } from "../../pixel/effects/replaceColor.js";
+import { replaceColor, replaceColors } from "../../pixel/effects/replaceColor.js";
 import { getPalettePreset, isPalettePresetId, PALETTE_PRESET_IDS } from "../../pixel/palettes.js";
 import { binarizeAlpha, DITHER_MODES, extractPalette, mapToPalette } from "../../pixel/quantize.js";
 import type { RgbaImage } from "../../pixel/RgbaImage.js";
@@ -251,19 +252,35 @@ export const registerColorTools: ToolRegistrar = (server, { gateway, canvas }) =
     {
       title: "Replace color",
       description:
-        "Replace one color with another across the layer (not just a connected area). tolerance also catches " +
-        "near shades, which all become exactly `to`. 'transparent' as `to` erases; as `from` it fills every " +
-        "empty pixel. Use read_pixels or analyze_sprite to find the exact colors first. One undo step.",
+        "Replace colors across the layer (not just a connected area): from/to for one swap, or pairs for several " +
+        "swaps at once (recolors, palette swaps, merging near-duplicate colors analyze_sprite found). All pairs " +
+        "match the original pixels, so they never chain: red→blue plus blue→red trades the two. tolerance also " +
+        "catches near shades, which all become exactly `to`. 'transparent' as `to` erases; as `from` it fills " +
+        "every empty pixel. Use read_pixels or analyze_sprite to find the exact colors first. One undo step.",
       inputSchema: {
-        from: colorArg.describe("Color to replace."),
-        to: colorArg.describe("New color."),
+        from: colorArg.optional().describe("Color to replace (one swap; pass with to)."),
+        to: colorArg.optional().describe("New color for from."),
+        pairs: z
+          .array(
+            z.strictObject({
+              from: colorArg.describe("Color to replace."),
+              to: colorArg.describe("Its new color."),
+            }),
+          )
+          .min(1)
+          .max(MAX_SWAPS)
+          .optional()
+          .describe('Several swaps in one call instead of from/to: [{from: "#ff0000", to: "#3b5dc9"}, ...].'),
         tolerance: toleranceArg.default(0),
         ...targetArgs,
       },
     },
-    async ({ from, to, tolerance, layer, frames, selectionOnly }) => {
-      const fromRgba = parseHex(from);
-      const toRgba = parseHex(to);
+    async ({ from, to, pairs, tolerance, layer, frames, selectionOnly }) => {
+      const swaps = swapList(from, to, pairs);
+      if (swaps.length > 1) return replaceSeveral(canvas, swaps, tolerance, { layer, frames, selectionOnly });
+      const [swap] = swaps;
+      const fromRgba = parseHex(swap.from);
+      const toRgba = parseHex(swap.to);
       let matched = 0;
       const run = await canvas.transform({ layer, frames, selectionOnly }, (image) => {
         const result = replaceColor(image, fromRgba, toRgba, tolerance);
@@ -272,28 +289,82 @@ export const registerColorTools: ToolRegistrar = (server, { gateway, canvas }) =
       });
       const where = describeTarget(layer, run.frames);
       if (run.changed === 0) {
-        const stored = snappedColor(run, to);
+        const stored = snappedColor(run, swap.to);
         const snappedBack =
           run.storage?.format === "indexed" &&
           matched > 0 &&
           stored !== undefined &&
-          stored === (snappedColor(run, from) ?? formatHex(...fromRgba));
+          stored === (snappedColor(run, swap.from) ?? formatHex(...fromRgba));
         if (snappedBack) {
           return textResult(
-            `Nothing changed on ${where}: ${to} is not in the indexed palette, and its nearest palette color is ` +
-              `${stored}, which the matching pixels already have. Add ${to} with set_palette, or switch the ` +
+            `Nothing changed on ${where}: ${swap.to} is not in the indexed palette, and its nearest palette color is ` +
+              `${stored}, which the matching pixels already have. Add ${swap.to} with set_palette, or switch the ` +
               'sprite with edit_sprite {action: "color_mode", mode: "rgb"}, then replace again.',
           );
         }
         return textResult(
-          `No pixels matched ${from} (tolerance ${tolerance}) on ${where}. Check the exact color with read_pixels ` +
-            "or analyze_sprite, or raise tolerance.",
+          `No pixels matched ${swap.from} (tolerance ${tolerance}) on ${where}. Check the exact color with ` +
+            "read_pixels or analyze_sprite, or raise tolerance.",
         );
       }
       return textResult(
-        `Replaced ${plural(run.changed, "pixel")} of ${from} (tolerance ${tolerance}) with ${writtenColor(run, to)} ` +
-          `on ${where}.`,
+        `Replaced ${plural(run.changed, "pixel")} of ${swap.from} (tolerance ${tolerance}) with ` +
+          `${writtenColor(run, swap.to)} on ${where}.`,
       );
     },
   );
 };
+
+// More swaps than this in one call is a palette remap: apply_palette does that better.
+const MAX_SWAPS = 64;
+
+interface Swap {
+  from: string;
+  to: string;
+}
+
+/** The swaps a replace_color call asks for: from/to or pairs, never both. */
+function swapList(from: string | undefined, to: string | undefined, pairs: Swap[] | undefined): Swap[] {
+  if (pairs !== undefined) {
+    if (from !== undefined || to !== undefined) throw new Error("Pass either from/to (one swap) or pairs, not both");
+    const seen = new Map<string, string>();
+    for (const pair of pairs) {
+      const key = formatHex(...parseHex(pair.from));
+      if (seen.has(key)) throw new Error(`${pair.from} appears twice in pairs; give each color one target`);
+      seen.set(key, pair.to);
+    }
+    return pairs;
+  }
+  if (from === undefined || to === undefined) {
+    throw new Error('Pass from and to (e.g. from: "#ff0000", to: "#0000ff"), or pairs for several swaps');
+  }
+  return [{ from, to }];
+}
+
+/** replace_color with pairs: every swap in one pass, so one undo step and no chaining. */
+async function replaceSeveral(
+  canvas: CanvasService,
+  swaps: Swap[],
+  tolerance: number,
+  target: { layer?: string; frames?: FrameSelector; selectionOnly?: boolean },
+): Promise<CallToolResult> {
+  const parsed = swaps.map((s) => ({ from: parseHex(s.from), to: parseHex(s.to) }));
+  const matched = swaps.map(() => 0);
+  const run = await canvas.transform(target, (image) => {
+    const result = replaceColors(image, parsed, tolerance);
+    result.replaced.forEach((n, i) => (matched[i] += n));
+    return result.image;
+  });
+  const where = describeTarget(target.layer, run.frames);
+  const details = swaps.map((s, i) => `${s.from}→${writtenColor(run, s.to)} (${matched[i]})`).join(", ");
+  if (run.changed === 0) {
+    return textResult(
+      `Nothing changed on ${where} (tolerance ${tolerance}): ${details}. Check the exact colors with read_pixels or ` +
+        "analyze_sprite, or raise tolerance.",
+    );
+  }
+  return textResult(
+    `Replaced ${plural(run.changed, "pixel")} in ${swaps.length} swaps (tolerance ${tolerance}) on ${where}: ` +
+      `${details}.${snapNote(run)}`,
+  );
+}
