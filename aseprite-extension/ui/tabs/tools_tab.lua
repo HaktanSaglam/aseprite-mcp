@@ -4,6 +4,7 @@
 -- picked tool's settings are shown (the window calls form:applyVisibility), and a hidden
 -- row takes no room, so the page stays nine rows tall whichever tool is picked. The
 -- one-click transforms below it stay visible. Every button maps to a requests.TOOLS key.
+-- Import PNG is a picker entry too: a button of its own would be a tenth row.
 --
 -- Row rules (Aseprite): a labeled widget or a change of widget type starts a new row,
 -- so widgets meant to share a row are of one type and only the first has a label.
@@ -62,6 +63,18 @@ return function(form, ui, C)
   form:slider{ id = "toolHue", key = "toolHue", label = "H / S / L", min = -180, max = 180, showIf = adjust }
   form:slider{ id = "toolSaturation", key = "toolSaturation", min = -100, max = 100, showIf = adjust }
   form:slider{ id = "toolLightness", key = "toolLightness", min = -100, max = 100, showIf = adjust }
+  form:newrow()
+  local normalize = forTools("normalize_pixel_art")
+  form:combo{ id = "toolNormColors", key = "toolNormColors", label = "Max colors", list = C.COLOR_LIMITS, showIf = normalize }
+  form:newrow()
+  form:check{ id = "toolNormCleanup", key = "toolNormCleanup", label = "Cleanup", text = "Remove stray pixels", showIf = normalize }
+  form:newrow()
+  -- Picking a file only chooses it; Apply imports it, so the same file can be imported
+  -- again after an undo (the picker reports no change for an unchanged file).
+  form:file{
+    id = "toolImportFile", key = "toolImportPath", label = "PNG file", title = "Import PNG",
+    filetypes = { "png" }, showIf = forTools("import_image"),
+  }
   form:newrow()
 
   form:button{ id = "toolApply", text = "Apply", onclick = ui.applyTool }

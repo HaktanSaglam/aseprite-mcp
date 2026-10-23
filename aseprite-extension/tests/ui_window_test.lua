@@ -31,8 +31,10 @@ local function truthy(value, what)
   if not value then error((what or "value") .. " should be truthy", 2) end
 end
 
+-- Every open sprite, not just the active one: after closing a sprite in the background
+-- app.sprite can be nil while others are still open.
 local function closeAllSprites()
-  while app.sprite do app.sprite:close() end
+  while #app.sprites > 0 do app.sprites[1]:close() end
 end
 
 local function newSprite(w, h)
@@ -866,7 +868,9 @@ end)
 local TOOL_PARAMS = {
   "toolTolerance", "toolOutlinePlacement", "toolOutlineMode", "toolOutlineColor", "toolColors",
   "toolPalette", "toolDither", "toolHue", "toolSaturation", "toolLightness", "toolAdjustReset",
+  "toolNormColors", "toolNormCleanup", "toolImportFile",
 }
+-- tool = nil: Apply needs input first (a slider moved, a file picked).
 local TOOL_PICKS = {
   { label = "Remove background", tool = "remove_background", shows = { "toolTolerance" } },
   { label = "Outline", tool = "add_outline", shows = { "toolOutlinePlacement", "toolOutlineMode" } },
@@ -875,6 +879,8 @@ local TOOL_PICKS = {
   { label = "Adjust colors", tool = nil, shows = { "toolHue", "toolSaturation", "toolLightness", "toolAdjustReset" } },
   { label = "Clean up stray pixels", tool = "cleanup_pixels", shows = {} },
   { label = "Drop shadow", tool = "drop_shadow", shows = {} },
+  { label = "Normalize (unzoom)", tool = "normalize_pixel_art", shows = { "toolNormColors", "toolNormCleanup" } },
+  { label = "Import PNG...", tool = nil, shows = { "toolImportFile" } },
 }
 
 test("the Tool picker shows only the picked tool's settings and Apply runs it", function()
@@ -899,7 +905,7 @@ test("the Tool picker shows only the picked tool's settings and Apply runs it", 
     if pick.tool then
       eq(env.conn.last().tool, pick.tool, pick.label .. " sends its tool")
     else
-      eq(#env.conn.sent, sent, pick.label .. " needs a slider first")
+      eq(#env.conn.sent, sent, pick.label .. " needs input first")
     end
   end
   -- The choice survives closing the window.
@@ -909,6 +915,442 @@ test("the Tool picker shows only the picked tool's settings and Apply runs it", 
   eq(again:_widget("toolChoice").option, "Reduce colors")
   eq(again:_widget("toolColors").visible, true)
   eq(again:_widget("toolTolerance").visible, false, "hidden before the first show")
+end)
+
+-- v1.1 ---------------------------------------------------------------------------------------
+
+-- The newest message of one kind ("chat_send", "tool_run", ...) the window sent.
+local function lastSent(env, event)
+  for i = #env.conn.sent, 1, -1 do
+    local m = json.decode(env.conn.sent[i])
+    if m.event == event then return m end
+  end
+  return nil
+end
+
+local function finishRun(env, stats)
+  env.conn.event({ event = "chat", kind = "busy", busy = true })
+  if stats then env.conn.event({ event = "chat", kind = "done", stats = stats }) end
+  env.conn.event({ event = "chat", kind = "busy", busy = false })
+end
+
+test("generate: Custom palette row, color limit, Force palette and Seamless tile", function()
+  closeAllSprites()
+  newSprite()
+  local env = setup()
+  local dlg = env.open("generate")
+  eq(dlg:_widget("genCustomPalette").visible, false, "no Custom row until Custom is picked")
+  eq(dlg:_widget("genForcePalette").enabled, false, "nothing to force with palette Auto")
+  dlg:_type("genPrompt", "a slime")
+  dlg:_choose("genPalette", "Custom")
+  eq(dlg:_widget("genCustomPalette").visible, true)
+  eq(dlg:_widget("genForcePalette").enabled, true)
+  eq(dlg:_widget("genCustomPalette").spec.placeholder, "#rrggbb, #rrggbb, ...")
+  dlg:_type("genCustomPalette", "#000000, slime green")
+  dlg:_click("genGenerate")
+  eq(lastSent(env, "chat_send"), nil, "not sent with a bad color")
+  truthy(env.logText():find('"slime" is not a color'), env.logText())
+  eq(dlg:_widget("genGenerate").enabled, true, "not stuck busy")
+
+  dlg:_type("genCustomPalette", "#000000, #ffffff, #ff0044")
+  dlg:_choose("genColors", "Max 8")
+  dlg:_click("genForcePalette")
+  dlg:_choose("genView", "Seamless tile")
+  dlg:_click("genGenerate")
+  local p = lastSent(env, "chat_send")
+  eq(p.options.palette, "custom")
+  eq(p.options.customPalette[2], "#ffffff")
+  eq(p.options.maxColors, 8)
+  eq(p.options.forcePalette, true)
+  eq(p.options.view, "tile")
+  truthy(env.logText():find("Custom (forced) · max 8 colors · Seamless tile", 1, true), env.logText())
+  eq(env.prefs.genCustomPalette, "#000000, #ffffff, #ff0044", "remembered")
+  finishRun(env)
+
+  dlg:_choose("genPalette", "Auto")
+  eq(dlg:_widget("genCustomPalette").visible, false)
+  eq(dlg:_widget("genForcePalette").enabled, false)
+  dlg:_click("genGenerate")
+  eq(lastSent(env, "chat_send").options.forcePalette, nil, "a greyed-out tick isn't sent")
+end)
+
+test("generate: Reference lists the open sprites, follows them and sends the sprite id", function()
+  closeAllSprites()
+  local knight = newSprite(16, 16)
+  knight.filename = "knight.aseprite"
+  local other = newSprite(16, 16)
+  other.filename = "other.aseprite"
+  local env = setup()
+  local dlg = env.open("generate")
+  eq(table.concat(dlg:_widget("genReference").options, ","), "None,knight.aseprite,other.aseprite")
+  eq(dlg:_widget("genReference").option, "None")
+  dlg:_type("genPrompt", "a matching shield")
+  dlg:_click("genGenerate")
+  eq(lastSent(env, "chat_send").options.reference, nil, "None: nothing sent")
+  finishRun(env)
+
+  dlg:_choose("genReference", "knight.aseprite")
+  dlg:_click("genGenerate")
+  local p = lastSent(env, "chat_send")
+  eq(p.options.reference.sprite, knight.id)
+  truthy(env.logText():find("with reference", 1, true), env.logText())
+  eq(env.prefs.genReference, nil, "not a saved setting")
+  finishRun(env)
+
+  -- A sprite opened later shows up when the tab opens again.
+  local third = newSprite(8, 8)
+  third.filename = "other.aseprite"
+  dlg:_tab("tab_chat")
+  dlg:_tab("tab_generate")
+  local options = dlg:_widget("genReference").options
+  eq(#options, 4)
+  eq(options[3], "other.aseprite")
+  eq(options[4], "other.aseprite #" .. third.id, "repeated names stay apart")
+  eq(dlg:_widget("genReference").option, "knight.aseprite", "the choice survives a refresh")
+
+  -- Closing the picked sprite (a site change) leaves None picked, never a stale id.
+  knight:close()
+  app.sprite = other
+  dlg:_tab("tab_chat")
+  dlg:_tab("tab_generate")
+  eq(dlg:_widget("genReference").option, "None")
+  eq(table.concat(dlg:_widget("genReference").options, ","), "None,other.aseprite,other.aseprite #" .. third.id)
+  dlg:_click("genGenerate")
+  eq(lastSent(env, "chat_send").options.reference, nil)
+end)
+
+test("generate: Source Current sprite turns the open sprite into 4/8 directions", function()
+  closeAllSprites()
+  local sprite = newSprite(48, 40)
+  local env = setup()
+  local dlg = env.open("generate")
+  eq(dlg:_widget("genSource").option, "Prompt")
+  dlg:_choose("genSource", "Current sprite")
+  dlg:_click("genDir4")
+  local p = lastSent(env, "chat_send")
+  eq(p.action, "directions")
+  eq(p.options.source, "current")
+  eq(p.options.size.width, 48)
+  eq(p.options.size.height, 40)
+  eq(p.sprite, sprite.id)
+  eq(p.text, "", "no prompt needed")
+  finishRun(env)
+  dlg:_choose("genVariations", "2")
+  dlg:_click("genGenerate")
+  eq(lastSent(env, "chat_send").action, "variations")
+  eq(lastSent(env, "chat_send").options.source, "current")
+end)
+
+test("generate settings are remembered per sprite and come back when its Generate tab opens", function()
+  closeAllSprites()
+  local a = newSprite(16, 16)
+  a.filename = "knight.aseprite"
+  local env = setup()
+  local dlg = env.open("generate")
+  dlg:_type("genPrompt", "a knight")
+  dlg:_choose("genStyle", "PICO-8")
+  dlg:_click("genGenerate")
+  finishRun(env)
+  eq(a.properties("aseprite-mcp").generate.genPrompt, "a knight", "stored in the sprite")
+  eq(a.isModified, false, "storing them is no edit")
+
+  local b = newSprite(16, 16)
+  dlg:_tab("tab_chat")
+  dlg:_tab("tab_generate")
+  eq(dlg:_widget("genPrompt").text, "a knight", "a sprite without settings keeps the current ones")
+  dlg:_type("genPrompt", "a tree")
+  dlg:_choose("genStyle", "1-bit")
+  dlg:_click("genGenerate")
+  finishRun(env)
+
+  app.sprite = a
+  dlg:_tab("tab_chat")
+  dlg:_tab("tab_generate")
+  eq(dlg:_widget("genPrompt").text, "a knight", "restored")
+  eq(dlg:_widget("genStyle").option, "PICO-8")
+  eq(env.prefs.genStyle, "pico8")
+  truthy(env.logText():find("loaded the settings last used with knight.aseprite", 1, true), env.logText())
+
+  -- Coming back to the same sprite keeps what the user typed since.
+  dlg:_type("genPrompt", "a knight with a sword")
+  dlg:_tab("tab_chat")
+  dlg:_tab("tab_generate")
+  eq(dlg:_widget("genPrompt").text, "a knight with a sword")
+
+  -- Opening the window on Generate counts as opening the tab.
+  app.sprite = b
+  env.window.close()
+  local again = env.open("generate")
+  eq(again:_widget("genPrompt").text, "a tree")
+  eq(again:_widget("genStyle").option, "1-bit")
+end)
+
+test("animate: All directions needs direction tags; each mode shows its frame numbers", function()
+  closeAllSprites()
+  local sprite = newSprite(16, 16)
+  sprite:newFrame()
+  sprite:newFrame()
+  local env = setup()
+  local dlg = env.open("animate")
+  eq(dlg:_widget("animAllDirections").enabled, false, "no direction tags")
+  local tag = sprite:newTag(1, 1)
+  tag.name = "down"
+  local right = sprite:newTag(2, 2)
+  right.name = "right"
+  dlg:_tab("tab_chat")
+  dlg:_tab("tab_animate")
+  eq(dlg:_widget("animAllDirections").enabled, true)
+  dlg:_click("animAllDirections")
+  dlg:_click("animRun")
+  local p = lastSent(env, "chat_send")
+  eq(p.options.animation.allDirections, true)
+  eq(p.options.animation.mode, nil, "New is the v1.0 behaviour")
+  finishRun(env)
+
+  eq(dlg:_widget("animFrom").visible, false)
+  eq(dlg:_widget("animKeep").visible, false)
+  dlg:_choose("animMode", "Between frames")
+  eq(dlg:_widget("animFrom").visible, true)
+  eq(dlg:_widget("animTo").visible, true)
+  eq(dlg:_widget("animKeep").visible, false)
+  dlg:_type("animFrom", "1")
+  dlg:_type("animTo", "3")
+  dlg:_slide("animFrames", 4)
+  dlg:_click("animRun")
+  local b = lastSent(env, "chat_send")
+  eq(b.options.animation.mode, "between")
+  eq(b.options.animation.fromFrame, 1)
+  eq(b.options.animation.toFrame, 3)
+  eq(b.options.animation.frames, 4)
+  finishRun(env)
+
+  dlg:_type("animTo", "9")
+  dlg:_click("animRun")
+  truthy(env.logText():find("has 3 frames"), env.logText())
+
+  dlg:_choose("animMode", "Continue")
+  eq(dlg:_widget("animFrom").visible, false)
+  eq(dlg:_widget("animKeep").visible, true)
+  dlg:_type("animKeep", "2")
+  dlg:_click("animRun")
+  local c = lastSent(env, "chat_send")
+  eq(c.options.animation.mode, "continue")
+  eq(c.options.animation.keepFrames, 2)
+  eq(env.prefs.animMode, "continue", "remembered")
+
+  -- Another sprite without tags greys it out again and nothing is sent for it.
+  finishRun(env)
+  newSprite(8, 8)
+  dlg:_tab("tab_chat")
+  dlg:_tab("tab_animate")
+  eq(dlg:_widget("animAllDirections").enabled, false)
+  dlg:_choose("animMode", "New")
+  dlg:_click("animRun")
+  eq(lastSent(env, "chat_send").options.animation.allDirections, nil)
+end)
+
+test("Undo AI run takes back exactly the last run, only while its sprite is untouched", function()
+  closeAllSprites()
+  local a = newSprite(16, 16)
+  local env = setup()
+  local dlg = env.open()
+  eq(dlg:_widget("quickUndoRun").enabled, false, "nothing to undo yet")
+  dlg:_type("chatInput", "draw a cat")
+  dlg:_click("chatSend")
+  env.conn.event({ event = "chat", kind = "busy", busy = true })
+  eq(dlg:_widget("quickUndoRun").enabled, false, "not during a run")
+  env.conn.event({ event = "chat", kind = "done", stats = { durationMs = 1000, undoSteps = 3 } })
+  env.conn.event({ event = "chat", kind = "busy", busy = false })
+  eq(dlg:_widget("quickUndoRun").enabled, true, "the run reported its steps")
+
+  -- Only for the sprite the run drew into.
+  local b = newSprite(8, 8)
+  dlg:_tab("tab_tools")
+  dlg:_tab("tab_chat")
+  eq(dlg:_widget("quickUndoRun").enabled, false, "another sprite is active")
+  app.sprite = a
+  dlg:_tab("tab_tools")
+  dlg:_tab("tab_chat")
+  eq(dlg:_widget("quickUndoRun").enabled, true)
+
+  dlg:_click("quickUndoRun")
+  local u = lastSent(env, "tool_run")
+  eq(u.tool, "undo")
+  eq(u.params.steps, 3)
+  eq(u.sprite, a.id)
+  truthy(env.conn.lastRaw():find('"params": {"steps": 3}', 1, true), env.conn.lastRaw())
+  eq(dlg:_widget("quickUndoRun").enabled, false, "once")
+  env.conn.event({ event = "tool_result", requestId = u.requestId, ok = true, text = "Undid 3 steps" })
+  truthy(env.logText():find("Undo AI run: Undid 3 steps", 1, true), env.logText())
+
+  -- Any other change to the sprite withdraws the offer: undoing 2 steps now would undo
+  -- the user's own work.
+  dlg:_type("chatInput", "add a hat")
+  dlg:_click("chatSend")
+  finishRun(env, { durationMs = 1000, undoSteps = 2 })
+  eq(dlg:_widget("quickUndoRun").enabled, true)
+  app.transaction(function() a:newLayer() end)
+  eq(dlg:_widget("quickUndoRun").enabled, false, "the user changed the sprite")
+  local before = #env.conn.sent
+  dlg:_widget("quickUndoRun").spec.onclick() -- e.g. through the dev hook
+  eq(#env.conn.sent, before, "nothing sent")
+  truthy(env.logText():find("nothing to undo"), env.logText())
+
+  -- A run that made a new sprite isn't offered: its steps aren't on this sprite.
+  dlg:_tab("tab_generate")
+  dlg:_type("genPrompt", "a tree")
+  dlg:_click("genGenerate")
+  finishRun(env, { durationMs = 1000, undoSteps = 5 })
+  dlg:_tab("tab_chat")
+  eq(dlg:_widget("quickUndoRun").enabled, false, "new sprite")
+  b:close()
+end)
+
+test("Repeat last resends the last request, never while a run is going", function()
+  closeAllSprites()
+  local sprite = newSprite(16, 16)
+  local env = setup()
+  local dlg = env.open()
+  dlg:_click("quickRepeat")
+  eq(lastSent(env, "chat_send"), nil)
+  truthy(env.logText():find("Nothing to repeat yet"), env.logText())
+
+  dlg:_type("chatInput", "make it blue")
+  dlg:_click("chatSend")
+  eq(dlg:_widget("quickRepeat").enabled, false, "disabled while working")
+  dlg:_widget("quickRepeat").spec.onclick()
+  truthy(env.logText():find("Still working"), "refused while busy")
+  eq(chatSends(env.conn), 1)
+  finishRun(env)
+
+  dlg:_click("quickRepeat")
+  eq(chatSends(env.conn), 2)
+  local p = lastSent(env, "chat_send")
+  eq(p.text, "make it blue")
+  eq(p.sprite, sprite.id)
+  truthy(env.logText():find("You: Repeat: make it blue", 1, true), env.logText())
+  truthy(env.prefs.lastRequest:find("make it blue", 1, true), "stored in the prefs")
+  finishRun(env)
+
+  -- A reference is only repeated within the session that picked it.
+  dlg:_tab("tab_generate")
+  dlg:_type("genPrompt", "a shield")
+  dlg:_choose("genReference", dlg:_widget("genReference").options[2])
+  dlg:_click("genGenerate")
+  eq(lastSent(env, "chat_send").options.reference.sprite, sprite.id)
+  finishRun(env)
+  dlg:_tab("tab_chat")
+  dlg:_click("quickRepeat")
+  eq(lastSent(env, "chat_send").options.reference.sprite, sprite.id, "same session: kept")
+  finishRun(env)
+  env.window.close()
+
+  -- Aseprite restarted: a new window module (its own session) reads the same prefs.
+  env.prefs.lastRequestSession = "an-earlier-session"
+  local restarted = setup(env.prefs)
+  local dlg2 = restarted.open()
+  dlg2:_click("quickRepeat")
+  local again = lastSent(restarted, "chat_send")
+  eq(again.text, "a shield", "survives a restart through the prefs")
+  eq(again.options.reference, nil, "but not the sprite id of the old session")
+end)
+
+test("tools: Normalize (unzoom) and Import PNG", function()
+  closeAllSprites()
+  local sprite = newSprite(16, 16)
+  local env = setup()
+  local dlg = env.open("tools")
+  dlg:_choose("toolChoice", "Normalize (unzoom)")
+  eq(dlg:_widget("toolNormCleanup").selected, true, "cleanup on by default")
+  dlg:_choose("toolNormColors", "Max 16")
+  dlg:_click("toolApply")
+  local n = lastSent(env, "tool_run")
+  eq(n.tool, "normalize_pixel_art")
+  eq(n.params.maxColors, 16)
+  eq(n.params.cleanup, true)
+  eq(n.params.layer, "Layer 1")
+  eq(n.params.frames, "current")
+
+  dlg:_choose("toolChoice", "Import PNG...")
+  eq(dlg:_widget("toolImportFile").visible, true)
+  eq(dlg:_widget("toolImportFile").spec.filetypes[1], "png")
+  eq(dlg:_widget("toolImportFile").spec.open, true)
+  local sent = #env.conn.sent
+  dlg:_click("toolApply")
+  eq(#env.conn.sent, sent, "no file yet")
+  truthy(dlg:_widget("toolStatus").text:find("Choose a PNG file"), dlg:_widget("toolStatus").text)
+  dlg:_pickFile("toolImportFile", "/art/hero.png")
+  eq(#env.conn.sent, sent, "picking only chooses the file")
+  dlg:_click("toolApply")
+  local i = lastSent(env, "tool_run")
+  eq(i.tool, "import_image")
+  eq(i.params.path, "/art/hero.png")
+  eq(i.params.layer, "Imported")
+  eq(i.params.frames, nil)
+  eq(i.sprite, sprite.id)
+  eq(env.prefs.toolImportPath, "/art/hero.png", "remembered")
+  dlg:_click("toolApply")
+  eq(#env.conn.sent, sent + 2, "the same file can be imported again")
+  env.window.close()
+  local again = env.open("tools")
+  eq(again:_widget("toolImportFile").filename, "/art/hero.png")
+end)
+
+test("ui_debug reaches every v1.1 widget", function()
+  closeAllSprites()
+  local sprite = newSprite(16, 16)
+  local env = setup({ devMode = true })
+  local function debug(msg)
+    msg.event = "ui_debug"
+    env.conn.event(msg)
+    local r = env.conn.last()
+    eq(r.event, "ui_debug_result", msg.action)
+    eq(r.ok, true, tostring(msg.widget) .. ": " .. tostring(r.error))
+  end
+  debug({ action = "open", tab = "generate" })
+  env.dlg = Fakes.instances[#Fakes.instances]
+  debug({ action = "set", widget = "genPrompt", value = "a gem" })
+  debug({ action = "set", widget = "genPalette", value = "custom" })
+  debug({ action = "set", widget = "genCustomPalette", value = "#000000, #ffffff" })
+  debug({ action = "set", widget = "genColors", value = 16 })
+  debug({ action = "set", widget = "genForcePalette", value = true })
+  debug({ action = "set", widget = "genSource", value = "current" })
+  debug({ action = "set", widget = "genReference", value = sprite.id })
+  debug({ action = "set", widget = "genView", value = "tile" })
+  debug({ action = "click", widget = "genGenerate" })
+  local g = lastSent(env, "chat_send")
+  eq(g.options.maxColors, 16)
+  eq(g.options.forcePalette, true)
+  eq(g.options.customPalette[1], "#000000")
+  eq(g.options.reference.sprite, sprite.id)
+  eq(g.options.view, "tile")
+  finishRun(env)
+
+  debug({ action = "tab", tab = "animate" })
+  debug({ action = "set", widget = "animMode", value = "between" })
+  debug({ action = "set", widget = "animFrom", value = 1 })
+  debug({ action = "set", widget = "animTo", value = 1 })
+  debug({ action = "set", widget = "animAllDirections", value = true })
+  debug({ action = "click", widget = "animRun" })
+  truthy(env.logText():find('"From" must be a frame before "To"'), "validated like a click")
+
+  debug({ action = "tab", tab = "tools" })
+  debug({ action = "set", widget = "toolChoice", value = "import_image" })
+  debug({ action = "set", widget = "toolImportFile", value = "/art/a.png" })
+  debug({ action = "click", widget = "toolApply" })
+  eq(lastSent(env, "tool_run").params.path, "/art/a.png")
+  debug({ action = "set", widget = "toolChoice", value = "normalize_pixel_art" })
+  debug({ action = "set", widget = "toolNormColors", value = "8" })
+  debug({ action = "set", widget = "toolNormCleanup", value = false })
+  debug({ action = "click", widget = "toolApply" })
+  eq(lastSent(env, "tool_run").params.maxColors, 8)
+  eq(lastSent(env, "tool_run").params.cleanup, false)
+
+  debug({ action = "tab", tab = "chat" })
+  debug({ action = "click", widget = "quickRepeat" })
+  eq(lastSent(env, "chat_send").text, "a gem")
+  finishRun(env)
+  debug({ action = "click", widget = "quickUndoRun" })
 end)
 
 test("unanswered tool calls time out", function()
@@ -931,10 +1373,18 @@ test("compact layout: pairs share rows and no tab page is taller than nine rows"
   local dlg = env.open()
   local function sameRow(a, b) eq(dlg:_widget(a).row, dlg:_widget(b).row, a .. " and " .. b .. " share a row") end
   sameRow("genSize", "genStyle")
+  sameRow("genPalette", "genColors")
   sameRow("genPalette", "genView")
+  sameRow("genSource", "genReference")
   sameRow("genTarget", "genVariations")
   sameRow("genOutline", "genTransparent")
+  sameRow("genOutline", "genForcePalette")
   sameRow("genGenerate", "genDir8")
+  sameRow("genGenerate", "genBatchRun")
+  sameRow("animPreset", "animMode")
+  sameRow("animFrom", "animTo")
+  sameRow("animLoop", "animAllDirections")
+  sameRow("quickRepeat", "quickUndoRun")
   sameRow("toolSelectionOnly", "toolAllFrames")
   sameRow("toolOutlinePlacement", "toolOutlineMode")
   sameRow("toolHue", "toolLightness")
@@ -944,15 +1394,27 @@ test("compact layout: pairs share rows and no tab page is taller than nine rows"
   sameRow("settingsModel", "settingsEffort")
   sameRow("settingsAutoReview", "settingsShowTools")
   truthy(dlg:_widget("genPrompt").row < dlg:_widget("genSize").row, "prompt comes first")
+  truthy(dlg:_widget("genCustomPalette").row == dlg:_widget("genPalette").row + 1, "custom colors right under the palette")
+  truthy(dlg:_widget("genBatch").row < dlg:_widget("genBatchRun").row, "batch list above its button")
+  truthy(dlg:_widget("quickRepeat").row > dlg:_widget("quickVariations").row, "repeat/undo below the quick actions")
 
-  eq(#dlg:_rows("tab_chat"), 6, "chat rows")
+  eq(#dlg:_rows("tab_chat"), 7, "chat rows")
   eq(#dlg:_rows("tab_generate"), 8, "generate rows")
+  dlg:_choose("genPalette", "Custom")
+  eq(#dlg:_rows("tab_generate"), 9, "generate with the Custom palette row: the tallest page")
+  dlg:_choose("genPalette", "Auto")
   eq(#dlg:_rows("tab_animate"), 6, "animate rows")
+  dlg:_choose("animMode", "Between frames")
+  eq(#dlg:_rows("tab_animate"), 7, "animate with From / To")
+  dlg:_choose("animMode", "Continue")
+  eq(#dlg:_rows("tab_animate"), 7, "animate with Keep frames")
   eq(#dlg:_rows("tab_settings"), 9, "settings rows (four are one-line labels)")
   for _, pick in ipairs(TOOL_PICKS) do
     dlg:_choose("toolChoice", pick.label)
     truthy(#dlg:_rows("tab_tools") <= 9, pick.label .. ": " .. #dlg:_rows("tab_tools") .. " rows")
   end
+  dlg:_choose("toolChoice", "Normalize (unzoom)")
+  eq(#dlg:_rows("tab_tools"), 9, "normalize: two settings rows")
   dlg:_choose("toolChoice", "Outline")
   dlg:_choose("toolOutlineMode", "Pick color")
   eq(#dlg:_rows("tab_tools"), 9, "outline with a color: the tallest tools page")

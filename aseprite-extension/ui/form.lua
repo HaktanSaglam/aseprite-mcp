@@ -134,6 +134,18 @@ return function(C, S)
     self.dlg:label{ id = spec.id, label = spec.label, text = spec.text or "" }
   end
 
+  -- A file picker button (Dialog:file): it shows the picked file's name, and its value is
+  -- the full path. title is the file dialog's title; filetypes e.g. {"png"}.
+  function Form:file(spec)
+    self:track(spec, "file", { key = spec.key, onchange = spec.onchange })
+    self.dlg:file{
+      id = spec.id, label = spec.label, title = spec.title, open = true,
+      filename = spec.key and S.get(self.prefs, spec.key) or spec.filename or "",
+      filetypes = spec.filetypes,
+      onchange = self:userChange(spec.onchange),
+    }
+  end
+
   -- Canvas sizes are logical px (Aseprite scales them by the UI scale).
   function Form:canvas(spec)
     self.dlg:canvas{
@@ -244,6 +256,38 @@ return function(C, S)
     end)
   end
 
+  -- The modify{} that shows `value` (in the setting's representation) in widget w.
+  local function showValue(dlg, id, w, value)
+    if w.kind == "entry" then
+      dlg:modify{ id = id, text = tostring(value or "") }
+    elseif w.kind == "number" then
+      dlg:modify{ id = id, text = tostring(math.floor(tonumber(value) or 0)) }
+    elseif w.kind == "check" then
+      dlg:modify{ id = id, selected = value == true }
+    elseif w.kind == "slider" then
+      dlg:modify{ id = id, value = math.floor(tonumber(value) or 0) }
+    elseif w.kind == "combo" then
+      dlg:modify{ id = id, option = C.labelOf(listOf(w), value) }
+    elseif w.kind == "color" then
+      dlg:modify{ id = id, color = colorOf(value) }
+    elseif w.kind == "file" then
+      dlg:modify{ id = id, filename = tostring(value or "") }
+    end
+  end
+
+  -- Shows the current prefs in the widgets bound to `keys` (e.g. after the window loaded
+  -- them from somewhere else), without running change handlers.
+  function Form:reload(keys)
+    local wanted = {}
+    for _, key in ipairs(keys) do wanted[key] = true end
+    self:quietly(function()
+      for _, id in ipairs(self.order) do
+        local w = self.widgets[id]
+        if w.key and wanted[w.key] then showValue(self.dlg, id, w, S.get(self.prefs, w.key)) end
+      end
+    end)
+  end
+
   -- Shows exactly the widgets whose showIf holds for the settings snapshot `s`. A row
   -- whose widgets are all hidden takes no room (labels hide with their widget), which
   -- is how one tab can offer many option sets without growing the window. Only changes
@@ -299,12 +343,16 @@ return function(C, S)
       elseif w.kind == "slider" then
         dlg:modify{ id = id, value = math.floor(tonumber(value) or 0) }
       elseif w.kind == "combo" then
+        -- JSON numbers arrive as floats: 8.0 must find the option "8" (a sprite id, a count).
+        if type(value) == "number" then value = tostring(math.tointeger(value) or value) end
         local list = listOf(w)
         local item = C.find(list, value) or C.findByLabel(list, value)
         if not item then error("Option not found for " .. id .. ": " .. tostring(value), 0) end
         dlg:modify{ id = id, option = item.label }
       elseif w.kind == "color" then
         dlg:modify{ id = id, color = colorOf(S.coerce(w.key, value)) }
+      elseif w.kind == "file" then
+        dlg:modify{ id = id, filename = tostring(value or "") }
       else
         error("Widget " .. id .. " can't be set", 0)
       end

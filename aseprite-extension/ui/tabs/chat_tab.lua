@@ -33,4 +33,9 @@ return function(form, ui)
   form:button{ id = "quickRedraw", text = "Redraw selection", onclick = function() ui.quick("edit_selection") end }
   form:button{ id = "quickReview", text = "Review & fix", onclick = function() ui.quick("review") end }
   form:button{ id = "quickVariations", text = "Variations x3", onclick = function() ui.quick("variations") end }
+  form:newrow()
+  -- Undo AI run stays greyed out until the last run on the active sprite reported its undo
+  -- steps, and again once anything else changed that sprite (see ui/run_undo.lua).
+  form:button{ id = "quickRepeat", text = "Repeat last", onclick = ui.repeatLast }
+  form:button{ id = "quickUndoRun", text = "Undo AI run", enabled = false, onclick = ui.undoRun }
 end

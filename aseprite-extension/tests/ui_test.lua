@@ -18,6 +18,8 @@ local T = load("ui/theme.lua")
 local ChatLog = load("ui/chat_log.lua")
 local Debug = load("ui/debug_hook.lua")
 local textRender = load("ui/text_render.lua")
+local RunUndo = load("ui/run_undo.lua")
+local SpriteSettings = load("ui/sprite_settings.lua")(S)
 
 local passed, failed = 0, 0
 
@@ -78,7 +80,8 @@ end)
 
 test("catalog labels stay ASCII so native widgets never need fallback glyphs", function()
   local lists = { C.SIZES, C.STYLES, C.PALETTES, C.VIEWS, C.TARGETS, C.VARIATIONS,
-    C.ANIMATIONS, C.EFFORTS, C.DITHERS, C.OUTLINE_PLACEMENTS, C.OUTLINE_COLORS, C.TOOL_CHOICES }
+    C.ANIMATIONS, C.EFFORTS, C.DITHERS, C.OUTLINE_PLACEMENTS, C.OUTLINE_COLORS, C.TOOL_CHOICES,
+    C.COLOR_LIMITS, C.SOURCES, C.ANIMATION_MODES, { C.NO_REFERENCE } }
   for _, list in ipairs(lists) do
     for _, item in ipairs(list) do
       truthy(not item.label:find("[\128-\255]"), "ASCII label " .. item.label)
@@ -87,10 +90,28 @@ test("catalog labels stay ASCII so native widgets never need fallback glyphs", f
 end)
 
 test("palette ids match the protocol's PaletteId", function()
-  local expected = { "auto", "current", "pico8", "sweetie16", "endesga32", "endesga64", "db16",
+  local expected = { "auto", "current", "custom", "pico8", "sweetie16", "endesga32", "endesga64", "db16",
     "db32", "aap64", "resurrect64", "gameboy", "nes", "1bit" }
   for i, id in ipairs(expected) do eq(C.PALETTES[i].id, id, "palette " .. i) end
   eq(#C.PALETTES, #expected)
+  -- The Apply palette tool takes presets only.
+  eq(C.find(C.PALETTE_PRESETS, "custom"), nil)
+  eq(C.find(C.PALETTE_PRESETS, "current"), nil)
+end)
+
+test("v1.1 ids match the protocol: views, sources, modes, color limits", function()
+  eq(C.labelOf(C.VIEWS, "tile"), "Seamless tile")
+  eq(table.concat({ C.SOURCES[1].id, C.SOURCES[2].id }, ","), "prompt,current")
+  local modes = {}
+  for i, m in ipairs(C.ANIMATION_MODES) do modes[i] = m.id end
+  eq(table.concat(modes, ","), "new,between,continue")
+  local limits = {}
+  for i, l in ipairs(C.COLOR_LIMITS) do limits[i] = l.count or l.id end
+  eq(table.concat(limits, ","), "auto,4,8,12,16,24,32")
+  truthy(C.isDirectionTag("down"), "down")
+  truthy(C.isDirectionTag("Up-Left"), "case-insensitive")
+  truthy(not C.isDirectionTag("walk"), "walk")
+  truthy(not C.isDirectionTag(nil), "nil")
 end)
 
 -- settings ----------------------------------------------------------------------------
@@ -444,12 +465,346 @@ test("the Tools tab's Apply runs the picked tool", function()
 end)
 
 test("every tool key builds a payload that encodes as an object", function()
-  local s = settings({ toolHue = 5 })
+  local s = settings({ toolHue = 5, toolImportPath = "/art/hero.png" })
   for key in pairs(R.TOOLS) do
     local p, err = R.tool(key, "x", s, SELECTED)
     truthy(p, key .. ": " .. tostring(err))
     truthy(json.encode(p.params):find("^{"), key .. " params object")
   end
+end)
+
+-- v1.1: palettes, source, reference ------------------------------------------------------
+
+test("parseColors reads pasted hex lists and explains bad ones", function()
+  local c = R.parseColors("#1A1C2C, 5d275d;#b13e53\n#fff  #1a1c2c")
+  eq(table.concat(c, ","), "#1a1c2c,#5d275d,#b13e53,#ffffff", "normalized, #rgb expanded, repeat dropped")
+  local _, e1 = R.parseColors("#1a1c2c, #12345")
+  truthy(e1:find('"#12345" is not a color'), e1)
+  truthy(e1:find("#rrggbb"), "says the format")
+  local _, e2 = R.parseColors("#1a1c2c, #1A1C2C")
+  truthy(e2:find("at least 2"), e2)
+  local _, e3 = R.parseColors("")
+  truthy(e3:find("at least 2"), e3)
+  local many = {}
+  for i = 1, 257 do many[i] = string.format("#%06x", i) end
+  local _, e4 = R.parseColors(table.concat(many, ","))
+  truthy(e4:find("at most 256"), e4)
+  eq(#R.parseColors(table.concat(many, ",", 1, 256)), 256)
+end)
+
+test("v1.0 requests stay exactly as they were when no v1.1 option is used", function()
+  local g = R.generate(settings({ genPrompt = "a knight" }), claude(), SPRITE)
+  for _, field in ipairs({ "source", "maxColors", "forcePalette", "customPalette", "reference" }) do
+    eq(g.options[field], nil, "generate " .. field)
+  end
+  local d = R.directions(4, settings({ genPrompt = "a fox" }), claude(), SPRITE)
+  eq(d.options.source, nil, 'Source "Prompt" is the v1.0 behaviour: not sent')
+  eq(d.options.size.width, 32)
+  local a = R.animate(settings(), claude(), SPRITE)
+  for _, field in ipairs({ "mode", "fromFrame", "toFrame", "keepFrames", "allDirections" }) do
+    eq(a.options.animation[field], nil, "animation " .. field)
+  end
+end)
+
+test("generate sends custom palettes, color limits, forced palettes and references", function()
+  local s = settings({ genPrompt = "a slime", genPalette = "custom", genCustomPalette = "#000000, #ffffff, #ff0044",
+    genColors = "12", genForcePalette = true })
+  local ctx = { sprite = SPRITE.sprite, reference = 3, openSprites = { [3] = true, [7] = true } }
+  local p = R.generate(s, claude(), ctx)
+  eq(p.options.palette, "custom")
+  eq(table.concat(p.options.customPalette, ","), "#000000,#ffffff,#ff0044")
+  eq(p.options.maxColors, 12)
+  eq(p.options.forcePalette, true)
+  eq(p.options.reference.sprite, 3)
+  eq(p.options.reference.frame, nil, "the contract's frame is optional; the window sends the sprite only")
+  local back = wire(p)
+  eq(back.options.customPalette[3], "#ff0044", "a JSON array")
+  eq(R.describe(p), "Generate · 32x32 · Custom (forced) · max 12 colors · with reference: a slime")
+
+  local _, bad = R.generate(settings({ genPrompt = "x", genPalette = "custom", genCustomPalette = "red, blue" }), claude(), SPRITE)
+  truthy(bad:find('"red" is not a color'), bad)
+  local auto = R.generate(settings({ genPrompt = "x", genForcePalette = true }), claude(), SPRITE)
+  eq(auto.options.forcePalette, nil, "Auto has no palette to force")
+  local current = R.generate(settings({ genPrompt = "x", genPalette = "current", genForcePalette = true }), claude(), SPRITE)
+  eq(current.options.forcePalette, true)
+  eq(current.options.customPalette, nil, "only for Custom")
+  local _, gone = R.generate(settings({ genPrompt = "x" }), claude(), { sprite = SPRITE.sprite, referenceGone = true })
+  truthy(gone:find("Reference sprite was closed"), gone)
+  local tile = R.generate(settings({ genPrompt = "grass", genView = "tile" }), claude(), {})
+  eq(tile.options.view, "tile")
+  truthy(R.describe(tile):find("Seamless tile", 1, true), R.describe(tile))
+end)
+
+test("Source Current sprite: directions and variations start from the open sprite", function()
+  local s = settings({ genSource = "current", genSize = "16" })
+  local d = R.directions(8, s, claude(), SPRITE)
+  eq(d.options.source, "current")
+  eq(d.options.size.width, 40, "the sprite's size, not Size")
+  eq(d.options.size.height, 30)
+  eq(d.text, "", "no description needed")
+  eq(d.sprite, 7)
+  truthy(R.describe(d):find("from sprite", 1, true), R.describe(d))
+  local _, e = R.directions(4, s, claude(), {})
+  truthy(e:find('Source "Current sprite" needs an open sprite'), e)
+  local _, eWithText = R.directions(4, settings({ genSource = "current", genPrompt = "a fox" }), claude(), {})
+  truthy(eWithText:find("Current sprite"), "even with a prompt")
+
+  local v = R.generate(settings({ genSource = "current", genVariations = "3" }), claude(), SPRITE)
+  eq(v.action, "variations", "an empty prompt is fine for variations of the sprite")
+  eq(v.options.source, "current")
+  eq(v.options.count, 3)
+  local _, e2 = R.generate(settings({ genSource = "current" }), claude(), SPRITE)
+  truthy(e2:find("One new sprite needs a Prompt", 1, true), "a single generate still needs a prompt: " .. e2)
+  local single = R.generate(settings({ genSource = "current", genPrompt = "a sword" }), claude(), SPRITE)
+  eq(single.action, "generate")
+  eq(single.options.source, nil, "Source is for directions and variations only")
+  local _, e5 = R.variations("", 3, settings({ genSource = "current" }), claude(), {})
+  truthy(e5:find('Source "Current sprite" needs an open sprite', 1, true), e5)
+  local quick = R.variations("", 3, settings({ genSource = "current" }), claude(), SPRITE)
+  eq(quick.options.source, "current", "Chat's Variations x3 uses the Generate choices too")
+end)
+
+test("animate modes: in-betweens and continuing keep the frames they name", function()
+  local ctx = { sprite = { id = 7, width = 40, height = 30, frames = 4 }, directionTags = 0 }
+  local b = R.animate(settings({ animMode = "between", animFrom = 1, animTo = 4, animFrames = 3 }), claude(), ctx)
+  eq(b.options.animation.mode, "between")
+  eq(b.options.animation.fromFrame, 1)
+  eq(b.options.animation.toFrame, 4)
+  eq(b.options.animation.frames, 3)
+  eq(b.options.animation.keepFrames, nil)
+  truthy(R.describe(b):find("between 1-4", 1, true), R.describe(b))
+  local _, e1 = R.animate(settings({ animMode = "between", animFrom = 3, animTo = 3 }), claude(), ctx)
+  truthy(e1:find('"From" must be a frame before "To"'), e1)
+  local _, e2 = R.animate(settings({ animMode = "between", animFrom = 1, animTo = 6 }), claude(), ctx)
+  truthy(e2:find("has 4 frames"), e2)
+
+  local c = R.animate(settings({ animMode = "continue", animKeep = 2 }), claude(), ctx)
+  eq(c.options.animation.mode, "continue")
+  eq(c.options.animation.keepFrames, 2)
+  eq(c.options.animation.fromFrame, nil)
+  truthy(R.describe(c):find("keep 1-2", 1, true), R.describe(c))
+  local _, e3 = R.animate(settings({ animMode = "continue", animKeep = 5 }), claude(), ctx)
+  truthy(e3:find("at most 4"), e3)
+  local one = { sprite = { id = 7, width = 4, height = 4, frames = 1 } }
+  local _, e4 = R.animate(settings({ animMode = "continue", animKeep = 2 }), claude(), one)
+  truthy(e4:find("has 1 frame,"), e4)
+
+  local none = R.animate(settings({ animAllDirections = true }), claude(), ctx)
+  eq(none.options.animation.allDirections, nil, "no direction tags, nothing to animate")
+  local tagged = { sprite = ctx.sprite, directionTags = 4 }
+  local all = R.animate(settings({ animAllDirections = true }), claude(), tagged)
+  eq(all.options.animation.allDirections, true)
+  truthy(R.describe(all):find("all directions", 1, true), R.describe(all))
+end)
+
+test("normalize and import tool payloads", function()
+  local n = R.tool("normalize_pixel_art", "1", settings({ toolNormColors = "16", toolNormCleanup = false, toolAllFrames = true }), SPRITE)
+  eq(n.tool, "normalize_pixel_art")
+  eq(n.params.maxColors, 16)
+  eq(n.params.cleanup, false, "sent either way")
+  eq(n.params.frames, "all", "takes the common target")
+  eq(n.params.layer, "Layer 1")
+  local plain = R.tool("normalize_pixel_art", "1", settings(), SPRITE)
+  eq(plain.params.maxColors, nil, "All colors: no limit")
+  eq(plain.params.cleanup, true)
+  eq(plain.params.scale, nil, "the bridge detects the scale")
+
+  local i = R.tool("import_image", "2", settings({ toolImportPath = " /art/Hero.PNG ", toolSelectionOnly = true }), SPRITE)
+  eq(i.tool, "import_image")
+  eq(i.params.path, "/art/Hero.PNG")
+  eq(i.params.layer, "Imported")
+  eq(i.params.selectionOnly, nil, "import_image takes no common target")
+  eq(i.params.frames, nil)
+  eq(i.sprite, 7)
+  local _, e1 = R.tool("import_image", "3", settings(), SPRITE)
+  truthy(e1:find("Choose a PNG file"), e1)
+  local _, e2 = R.tool("import_image", "3", settings({ toolImportPath = "/art/hero.jpg" }), SPRITE)
+  truthy(e2:find("%.png"), e2)
+  local _, e3 = R.tool("import_image", "3", settings({ toolImportPath = "/art/hero.png" }), {})
+  truthy(e3:find("sprite"), "needs a sprite to import into")
+end)
+
+test("undo run payload and the sprite a request draws into", function()
+  local u = R.undoRun("ui-9", 7, 4.0)
+  eq(u.event, "tool_run")
+  eq(u.tool, "undo")
+  eq(u.params.steps, 4)
+  eq(math.type(u.params.steps), "integer")
+  eq(u.sprite, 7)
+  truthy(json.encode(u.params):find('^{"steps": 4}'), json.encode(u.params))
+
+  eq(R.boundSprite(R.chat("hi", settings(), claude(), SPRITE)), 7)
+  eq(R.boundSprite(R.review("", settings(), claude(), SPRITE)), 7)
+  eq(R.boundSprite(R.animate(settings(), claude(), SPRITE)), 7)
+  eq(R.boundSprite(R.generate(settings({ genPrompt = "x", genTarget = "new_layer" }), claude(), SPRITE)), 7)
+  eq(R.boundSprite(R.generate(settings({ genPrompt = "x" }), claude(), SPRITE)), nil, "new sprite")
+  eq(R.boundSprite(R.directions(4, settings({ genSource = "current" }), claude(), SPRITE)), nil, "new sprites")
+  eq(R.boundSprite(R.variations("x", 2, settings(), claude(), SPRITE)), nil)
+  eq(R.boundSprite(R.chat("hi", settings(), claude(), {})), nil, "no sprite")
+  eq(R.boundSprite({ event = "chat_send", action = "generate", sprite = 7, options = {} }), nil, "no target: new sprite")
+end)
+
+-- Repeat last ---------------------------------------------------------------------------------
+
+local function stored(p) return json.encode(p) end
+
+test("repeat last: nothing stored, garbage, or not a chat_send", function()
+  for _, value in ipairs({ "", "{not json", json.encode({ event = "tool_run" }) }) do
+    local p, err = R.repeatLast(value, SPRITE, true)
+    eq(p, nil)
+    eq(err, R.NOTHING_TO_REPEAT)
+  end
+end)
+
+test("repeat last resends the request on the sprite and selection open now", function()
+  local first = R.chat("make it blue", settings(), claude(), SELECTED)
+  local now = { sprite = { id = 9, width = 8, height = 8 }, selection = { x = 0, y = 0, width = 2, height = 2 } }
+  local p = R.repeatLast(stored(first), now, true)
+  eq(p.event, "chat_send")
+  eq(p.text, "make it blue")
+  eq(p.options.model, "opus")
+  eq(p.sprite, 9, "the active sprite, not the one it was first sent with")
+  eq(p.selection.width, 2, "today's selection")
+  eq(math.type(p.sprite), "integer", "plain integers again")
+  local noSel = R.repeatLast(stored(first), { sprite = now.sprite }, true)
+  eq(noSel.selection, nil, "no selection now, none sent")
+  local noSprite = R.repeatLast(stored(first), {}, true)
+  eq(noSprite.sprite, nil, "chat works without a sprite")
+  eq(R.describe(noSprite), "make it blue")
+
+  local batch = R.batch(settings({ genBatch = "sword; shield" }), claude(), {})
+  local again = R.repeatLast(stored(batch), {}, true)
+  eq(R.describe(again), "Batch of 2 · 32x32: sword, shield", "arrays come back as Lua tables")
+  truthy(json.encode(again):find('"items": %["sword", "shield"%]'), json.encode(again))
+end)
+
+test("repeat last checks what the action needs and drops stale references", function()
+  local redraw = R.editSelection("moss", settings(), claude(), SELECTED)
+  local _, e1 = R.repeatLast(stored(redraw), SPRITE, true)
+  truthy(e1:find("Select an area"), e1)
+  local _, e2 = R.repeatLast(stored(R.review("", settings(), claude(), SPRITE)), {}, true)
+  truthy(e2:find("Open or create a sprite"), e2)
+  local dirs = R.directions(4, settings({ genSource = "current" }), claude(), SPRITE)
+  local _, e3 = R.repeatLast(stored(dirs), {}, true)
+  truthy(e3:find("Current sprite"), e3)
+  local resized = R.repeatLast(stored(dirs), { sprite = { id = 2, width = 64, height = 48 } }, true)
+  eq(resized.options.size.width, 64, "source size follows the sprite it now starts from")
+
+  local withRef = R.generate(settings({ genPrompt = "x" }), claude(), { reference = 3, openSprites = { [3] = true } })
+  local kept = R.repeatLast(stored(withRef), { openSprites = { [3] = true } }, true)
+  eq(kept.options.reference.sprite, 3, "same session, still open")
+  local closed = R.repeatLast(stored(withRef), { openSprites = {} }, true)
+  eq(closed.options.reference, nil, "closed since")
+  local restarted = R.repeatLast(stored(withRef), { openSprites = { [3] = true } }, false)
+  eq(restarted.options.reference, nil, "id 3 is another sprite after a restart")
+end)
+
+-- Run undo ---------------------------------------------------------------------------------
+
+local function watcher()
+  local w = { watching = {}, stops = 0, fail = false }
+  function w.watch(id, onChange)
+    if w.fail then return nil end
+    w.watching[id] = onChange
+    return function()
+      w.stops = w.stops + 1
+      w.watching[id] = nil
+    end
+  end
+  return w
+end
+
+test("run undo offers a run's steps for its sprite until the sprite changes", function()
+  local w = watcher()
+  local u = RunUndo.new(w.watch)
+  eq(u:steps(7), nil)
+  u:started(7)
+  eq(u:done(wire({ durationMs = 10, undoSteps = 3 })), true)
+  u:ended()
+  eq(u:steps(7), 3)
+  eq(math.type(u:steps(7)), "integer")
+  eq(u:steps(8), nil, "other sprites have nothing to undo")
+  w.watching[7]() -- the user drew on it
+  eq(u:steps(7), nil, "the history no longer ends with the run")
+  eq(w.stops, 1, "listener removed")
+
+  u:started(7)
+  u:done({ undoSteps = 2 })
+  eq(u:take(7), 2)
+  eq(u:steps(7), nil, "handed out once")
+end)
+
+test("run undo ignores runs it can't attribute or that changed nothing", function()
+  local w = watcher()
+  local u = RunUndo.new(w.watch)
+  u:started(nil) -- generate into a new sprite
+  eq(u:done({ undoSteps = 5 }), false)
+  u:started(7)
+  u:done({ undoSteps = 4 })
+  u:ended()
+  u:started(7)
+  eq(u:done({ undoSteps = 0 }), false, "a run that only answered")
+  eq(u:steps(7), 4, "the drawing run before it can still be undone")
+  u:ended()
+  eq(u:done({ undoSteps = 9 }), false, "a late done after the run ended")
+  eq(u:steps(7), 4)
+  u:started(7)
+  eq(u:done({}), false, "an older bridge reports no undoSteps")
+  w.fail = true
+  u:started(8)
+  eq(u:done({ undoSteps = 2 }), false, "unwatchable sprite: no offer")
+  eq(u:steps(8), nil)
+end)
+
+-- Per-sprite Generate settings ------------------------------------------------------------------
+
+test("sprite settings round-trip through sprite.properties without an undo step", function()
+  local sprite = Sprite(8, 8)
+  eq(SpriteSettings.load(sprite), nil, "nothing stored yet")
+  local s = settings({ genPrompt = "a knight", genSize = "64", genPalette = "custom",
+    genCustomPalette = "#000000, #ffffff", genColors = "8", genForcePalette = true, genSource = "current" })
+  eq(SpriteSettings.save(sprite, s), true)
+  eq(sprite.isModified, false, "no undo step, no unsaved mark")
+  local loaded = SpriteSettings.load(sprite)
+  eq(loaded.genPrompt, "a knight")
+  eq(loaded.genSize, "64")
+  eq(loaded.genCustomPalette, "#000000, #ffffff")
+  eq(loaded.genForcePalette, true)
+  eq(loaded.genSource, "current")
+  eq(loaded.genOutline, true)
+  eq(loaded.tab, nil, "only Generate settings")
+
+  sprite.properties(SpriteSettings.EXTENSION_KEY).generate = { genSize = "999", genStyle = "8bit", stray = 1 }
+  local odd = SpriteSettings.load(sprite)
+  eq(odd.genSize, "32", "invalid values fall back like prefs")
+  eq(odd.genStyle, "8bit")
+  eq(odd.stray, nil)
+  sprite.properties(SpriteSettings.EXTENSION_KEY).generate = "not a table"
+  eq(SpriteSettings.load(sprite), nil)
+  sprite:close()
+
+  local prefs = { genPrompt = "old", genStyle = "8bit" }
+  local changed = SpriteSettings.apply(prefs, { genPrompt = "new", genStyle = "8bit" })
+  eq(table.concat(changed, ","), "genPrompt", "only real changes")
+  eq(prefs.genPrompt, "new")
+  eq(SpriteSettings.save(nil, s), false)
+  eq(SpriteSettings.load(nil), nil)
+end)
+
+test("settings for v1.1 have safe defaults", function()
+  local s = S.snapshot({})
+  eq(s.genSource, "prompt")
+  eq(s.genColors, "auto")
+  eq(s.genForcePalette, false)
+  eq(s.animMode, "new")
+  eq(s.animFrom, 1)
+  eq(s.animTo, 2)
+  eq(s.toolNormCleanup, true)
+  eq(s.lastRequest, "")
+  local long = string.rep("x", 50000)
+  eq(#S.coerce("lastRequest", long), 50000, "a whole request fits")
+  eq(#S.coerce("genPrompt", long), 4000, "other text stays capped")
+  eq(S.coerce("animFrom", 0), 1)
 end)
 
 -- wrap / format / theme -------------------------------------------------------------------
