@@ -1,8 +1,9 @@
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import zlib from "node:zlib";
 import { PNG } from "pngjs";
-import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resolveInputPath, type PathProbe } from "../src/canvas/pathPolicy.js";
 import { registerImportImage } from "../src/mcp/tools/importImage.js";
 import { decodePng, pngSize } from "../src/pixel/pngDecode.js";
@@ -26,6 +27,56 @@ function headerOnly(width: number, height: number): Buffer {
   fake.writeUInt32BE(width, 16);
   fake.writeUInt32BE(height, 20);
   return fake;
+}
+
+const CRC_TABLE = Array.from({ length: 256 }, (_, n) => {
+  let c = n;
+  for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+  return c >>> 0;
+});
+
+function crc32(bytes: Uint8Array): number {
+  let c = 0xffffffff;
+  for (const b of bytes) c = CRC_TABLE[(c ^ b) & 255] ^ (c >>> 8);
+  return (c ^ 0xffffffff) >>> 0;
+}
+
+function chunk(type: string, data: Uint8Array): Buffer {
+  const typed = Buffer.concat([Buffer.from(type, "ascii"), data]);
+  const length = Buffer.alloc(4);
+  length.writeUInt32BE(data.length);
+  const crc = Buffer.alloc(4);
+  crc.writeUInt32BE(crc32(typed));
+  return Buffer.concat([length, typed, crc]);
+}
+
+/** An 8-bit RGBA PNG around the given compressed pixel stream (pngjs can't write interlaced files). */
+function pngFile(width: number, height: number, interlace: 0 | 1, idat: Uint8Array): Buffer {
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
+  ihdr[8] = 8;
+  ihdr[9] = 6;
+  ihdr[12] = interlace;
+  const signature = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
+  return Buffer.concat([signature, chunk("IHDR", ihdr), chunk("IDAT", idat), chunk("IEND", new Uint8Array(0))]);
+}
+
+/** `image` as an Adam7-interlaced PNG, every pass row unfiltered. */
+function interlacedPng(image: RgbaImage): Buffer {
+  const passes = [[0, 0, 8, 8], [4, 0, 8, 8], [0, 4, 4, 8], [2, 0, 4, 4], [0, 2, 2, 4], [1, 0, 2, 2], [0, 1, 1, 2]];
+  const bytes: number[] = [];
+  for (const [x0, y0, dx, dy] of passes) {
+    if (image.width <= x0) continue;
+    for (let y = y0; y < image.height; y += dy) {
+      bytes.push(0);
+      for (let x = x0; x < image.width; x += dx) {
+        const o = (y * image.width + x) * 4;
+        bytes.push(...image.data.subarray(o, o + 4));
+      }
+    }
+  }
+  return pngFile(image.width, image.height, 1, zlib.deflateSync(Buffer.from(bytes)));
 }
 
 describe("resolveInputPath", () => {
@@ -81,6 +132,40 @@ describe("decodePng", () => {
     expect(() => decodePng(headerOnly(5000, 5000), 1024)).toThrow(/5000x5000; at most 1024x1024/);
     expect(() => decodePng(headerOnly(0, 4), 1024)).toThrow(/empty/);
     expect(() => decodePng(headerOnly(4, 4), 1024)).toThrow(/could not be decoded/);
+  });
+
+  it("decodes interlaced pixel art", () => {
+    for (const [w, h] of [[13, 11], [1, 1], [3, 9]]) {
+      const art = randomArt(w, h, w + h);
+      expect(differingPixels(decodePng(interlacedPng(art), 1024), art)).toBe(0);
+    }
+  });
+
+  it("refuses an interlaced PNG whose pixel data inflates past its header size, before pngjs inflates it", () => {
+    // 1024x1024 RGBA needs ~4.2 MB; this 32 kB stream inflates to 32 MB (a decompression bomb).
+    const bomb = pngFile(1024, 1024, 1, zlib.deflateSync(Buffer.alloc(32 * 1024 * 1024)));
+    expect(bomb.length).toBeLessThan(64 * 1024);
+    const inflate = vi.spyOn(zlib, "inflateSync");
+    let error: unknown;
+    try {
+      decodePng(bomb, 1024);
+    } catch (thrown) {
+      error = thrown;
+    } finally {
+      inflate.mockRestore();
+    }
+    // pngjs inflates interlaced data without a limit (a 16 MB file could take ~16 GB): it must
+    // never get to the stream, and nothing bigger than the image may be inflated at all.
+    const sizes = inflate.mock.results.flatMap((r) => (r.type === "return" ? [(r.value as Buffer).length] : []));
+    expect(sizes.filter((n) => n > 4.5 * 1024 * 1024)).toEqual([]);
+    expect(String(error)).toMatch(/pixel data is bigger than its 1024x1024 header says/);
+  });
+
+  it("reports a broken interlaced stream as undecodable", () => {
+    const broken = interlacedPng(randomArt(8, 8, 1));
+    const idat = broken.indexOf("IDAT");
+    broken.fill(0xff, idat + 6, idat + 14);
+    expect(() => decodePng(broken, 1024)).toThrow(/could not be decoded/);
   });
 });
 
