@@ -1,4 +1,11 @@
-import type { IPaletteGateway, IPixelGateway, ISpriteGateway, SpriteInfo, WriteImageRequest } from "../aseprite/AsepriteGateway.js";
+import type {
+  IPaletteGateway,
+  IPixelGateway,
+  ISpriteGateway,
+  LayerInfo,
+  SpriteInfo,
+  WriteImageRequest,
+} from "../aseprite/AsepriteGateway.js";
 import type { DrawnCel } from "../aseprite/SpriteActivity.js";
 import { defaultLayerPath } from "../canvas/CanvasService.js";
 import { formatHex, isOpaque, packRgb, parseHex } from "../pixel/color.js";
@@ -88,7 +95,23 @@ function sameImage(a: RgbaImage, b: RgbaImage): boolean {
   return a.width === b.width && a.height === b.height && changedPixels(a, b) === 0;
 }
 
-type EnforcerGateway = Pick<ISpriteGateway, "getSpriteInfo"> & IPixelGateway & Pick<IPaletteGateway, "getPalette">;
+/**
+ * The colors forcePalette makes the sprite palette: only a palette the user picked by
+ * name (a preset) or listed (custom). "current" already is the sprite palette, and a
+ * style's own colors under "auto" never set it, forced or not.
+ */
+function chosenPaletteColors(options: ChatOptions): readonly string[] | undefined {
+  const { palette } = options;
+  if (palette === undefined || palette === "auto" || palette === "current") return undefined;
+  const forced = forcedPalette(options);
+  return forced && "colors" in forced ? forced.colors : undefined;
+}
+
+// Palettes come back as #rrggbbaa, presets are #rrggbb: compared as colors, not strings.
+const sameColors = (a: readonly string[], b: readonly string[]) =>
+  a.length === b.length && a.every((c, i) => formatHex(...parseHex(c)) === formatHex(...parseHex(b[i])));
+
+type EnforcerGateway = Pick<ISpriteGateway, "getSpriteInfo"> & IPixelGateway & Pick<IPaletteGateway, "getPalette" | "setPalette">;
 
 interface Cel {
   layer: string;
@@ -99,11 +122,28 @@ const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
 
 /**
  * maxColors / forcePalette after a successful run: the bridge, not the model, has the
- * last word on the colors, on exactly the cels the run drew and as ONE undo step (one
- * write for every cel), so "Undo" never leaves half a palette snap behind.
+ * last word on the colors, on every cel of the layers the run drew and as ONE undo step
+ * (one write for every cel), so "Undo" never leaves half a palette snap behind.
  */
 export class PaletteEnforcer {
   constructor(private readonly gateway: EnforcerGateway) {}
+
+  /**
+   * Before the run: forcePalette with a preset or custom palette also makes it the
+   * sprite palette, as the apply_palette setSpritePalette step of an unforced preset
+   * does. Set up front rather than with the snap: a palette change and pixel writes are
+   * separate Aseprite transactions, and the snap must stay ONE undo step. RGB only: an
+   * indexed sprite's palette decides what its pixels show, so swapping it would recolor them.
+   */
+  async presetSpritePalette(sprite: number, options: ChatOptions): Promise<void> {
+    const colors = chosenPaletteColors(options);
+    if (!colors) return;
+    const ref = { sprite };
+    if ((await this.gateway.getSpriteInfo(ref)).colorMode !== "rgb") return;
+    // An unchanged palette must not cost an undo step.
+    if (sameColors((await this.gateway.getPalette(ref)).colors, colors)) return;
+    await this.gateway.setPalette([...colors], ref);
+  }
 
   /** Returns the status line for the chat, or undefined when no rule applies. */
   async enforce(sprite: number, drawn: readonly DrawnCel[], options: ChatOptions): Promise<string | undefined> {
@@ -118,7 +158,7 @@ export class PaletteEnforcer {
     if (info.colorMode !== "rgb") {
       return `Palette rules not applied: the sprite is in ${info.colorMode} mode, which already limits it to its own palette.`;
     }
-    const cels = resolveCels(drawn, info);
+    const cels = celsOf(drawnLayers(drawn, info), info);
     if (cels.length === 0) return undefined;
 
     const palette = forced ? await this.paletteColors(forced, sprite) : undefined;
@@ -158,24 +198,39 @@ function layerPathOf(info: SpriteInfo, name: string): string | undefined {
   );
 }
 
-/** The run's drawn cels as concrete, writable layer/frame pairs of the sprite as it is now. */
-function resolveCels(drawn: readonly DrawnCel[], info: SpriteInfo): Cel[] {
+/** An image layer the extension lets the bridge write: unlocked, and no locked group above it. */
+function isWritable(info: SpriteInfo, layer: LayerInfo): boolean {
+  if (layer.isGroup || !layer.isEditable) return false;
+  const byPath = new Map(info.layers.map((l) => [l.path, l]));
+  for (let parent = layer.parent; parent !== undefined; parent = byPath.get(parent)?.parent) {
+    if (byPath.get(parent)?.isEditable === false) return false;
+  }
+  return true;
+}
+
+/**
+ * The layers the run drew, as writable paths of the sprite as it is now. Their frame
+ * numbers are dropped on purpose: a run that inserts or deletes frames leaves them
+ * pointing at other frames, and the rules hold for the layers the run drew.
+ */
+function drawnLayers(drawn: readonly DrawnCel[], info: SpriteInfo): string[] {
   // Layers deleted, locked or turned into groups since they were drawn are left alone.
-  const writable = new Set(info.layers.filter((l) => !l.isGroup && l.isEditable).map((l) => l.path));
-  const frameCount = info.frames.length;
-  const cels = new Map<string, Cel>();
-  const add = (path: string | undefined, frame: number) => {
-    if (path === undefined || !writable.has(path) || frame < 1 || frame > frameCount) return;
-    cels.set(`${path}\u0000${frame}`, { layer: path, frame });
-  };
+  const writable = new Set(info.layers.filter((l) => isWritable(info, l)).map((l) => l.path));
+  const layers = new Set<string>();
   for (const cel of drawn) {
     if ("everyLayer" in cel) {
-      for (const layer of writable) add(layer, cel.frame);
-    } else {
-      add(cel.layer === undefined ? defaultLayerPath(info) : layerPathOf(info, cel.layer), cel.frame ?? info.activeFrame);
+      for (const layer of writable) layers.add(layer);
+      continue;
     }
+    const path = cel.layer === undefined ? defaultLayerPath(info) : layerPathOf(info, cel.layer);
+    if (path !== undefined && writable.has(path)) layers.add(path);
   }
-  return [...cels.values()];
+  return [...layers];
+}
+
+/** Every frame of those layers; empty cels read as transparent and are never written. */
+function celsOf(layers: readonly string[], info: SpriteInfo): Cel[] {
+  return layers.flatMap((layer) => info.frames.map((f) => ({ layer, frame: f.index })));
 }
 
 function describe(forced: ForcedPalette | undefined, maxColors: number | undefined, result: LimitedImages, changed: number): string {

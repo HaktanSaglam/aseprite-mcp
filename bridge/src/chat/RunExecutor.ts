@@ -62,17 +62,20 @@ export async function executeRun(
     });
     let finished = false;
     let lastText: string | undefined;
+    // Text between tool calls is the model thinking aloud ("frame 3 is good, now frame 2");
+    // the reply is what it says after its last tool call, so only that reaches the chat.
+    let afterLastTool: string[] = [];
     for await (const event of events) {
       switch (event.type) {
         case "session":
           outcome.sessionId = event.sessionId;
           break;
         case "text":
-          // Parallel jobs narrate their steps all at once; only each job's final words are shown.
-          if (presentation.quietTools) lastText = event.text;
-          else sink({ kind: "text", text: prefix + event.text });
+          lastText = event.text;
+          afterLastTool.push(event.text);
           break;
         case "tool":
+          afterLastTool = [];
           if (!presentation.quietTools) sink({ kind: "tool", name: event.name });
           break;
         case "retry":
@@ -87,7 +90,10 @@ export async function executeRun(
           break;
       }
     }
-    if (lastText && outcome.ok) sink({ kind: "text", text: prefix + lastText });
+    // Parallel jobs show one line each; a single run shows its whole closing reply, or its
+    // last words if it closed with a tool call.
+    const reply = presentation.quietTools || afterLastTool.length === 0 ? lastText : afterLastTool.join("\n");
+    if (reply && outcome.ok) sink({ kind: "text", text: prefix + reply });
     if (!finished && !outcome.ok) outcome.error ??= "The model run ended without a result.";
   } catch (error) {
     outcome.ok = false;

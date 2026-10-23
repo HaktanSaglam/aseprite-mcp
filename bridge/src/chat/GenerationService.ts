@@ -27,7 +27,7 @@ import {
   type PromptContext,
 } from "./promptBuilder.js";
 import { carryOverPalette } from "./paletteCarryOver.js";
-import { closeIfEmpty, enforceColorRules } from "./runAftercare.js";
+import { applyChosenPalette, closeIfEmpty, enforceColorRules } from "./runAftercare.js";
 import { executeRun, type JobOutcome } from "./RunExecutor.js";
 import type { SessionStore } from "./SessionStore.js";
 import { STYLE_SPECS } from "./styleSpecs.js";
@@ -183,6 +183,7 @@ export class GenerationService implements IChatRequestHandler {
     const watch = this.deps.activity.watch(created.id);
     let outcome: RequestOutcome = { ok: false };
     try {
+      await applyChosenPalette(this.enforcer, created.id, request.options);
       const plan: DirectionsPlan = { directions: order, mirrors: mirrorPairs(order), fromCurrent: source !== undefined };
       outcome = await this.drawDirections(request, run, created, plan, source, style);
       if (outcome.ok && !run.signal.aborted) {
@@ -368,6 +369,7 @@ export class GenerationService implements IChatRequestHandler {
     const outcomes = await mapLimit(jobs, maxParallelRuns, async (job): Promise<JobOutcome> => {
       const watch = this.deps.activity.watch(job.info.id);
       try {
+        await applyChosenPalette(this.enforcer, job.info.id, options);
         const outcome = await executeRun(
           run.provider,
           {

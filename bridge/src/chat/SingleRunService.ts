@@ -36,7 +36,7 @@ import {
   type AnimationPlan,
   type PromptContext,
 } from "./promptBuilder.js";
-import { closeIfEmpty, enforceColorRules } from "./runAftercare.js";
+import { applyChosenPalette, closeIfEmpty, enforceColorRules } from "./runAftercare.js";
 import { executeRun } from "./RunExecutor.js";
 import type { SessionStore } from "./SessionStore.js";
 import { loadStyleReference } from "./styleReference.js";
@@ -107,6 +107,7 @@ export class SingleRunService implements IChatRequestHandler {
     const watch = this.deps.activity.watch(info.id);
     let outcome: RequestOutcome = { ok: false };
     try {
+      await applyChosenPalette(this.enforcer, info.id, request.options);
       outcome = await this.draw(request, run, target, extras);
       if (outcome.ok && !run.signal.aborted) {
         await enforceColorRules(this.enforcer, info.id, watch.drawnCels, request.options, run.sink);
@@ -115,8 +116,10 @@ export class SingleRunService implements IChatRequestHandler {
       watch.close();
       if (target.fresh && !outcome.ok) await closeIfEmpty(this.deps.gateway, info.id);
     }
-    // A sprite this run created is simply closed to get rid of it.
-    return target.fresh ? outcome : { ...outcome, undo: { sprite: info.id, steps: watch.undoSteps } };
+    // A sprite this run created is simply closed to get rid of it; a run that changed
+    // nothing has nothing to undo (and "undo 0" is not a valid request).
+    if (target.fresh || watch.undoSteps <= 0) return outcome;
+    return { ...outcome, undo: { sprite: info.id, steps: watch.undoSteps } };
   }
 
   private async draw(request: ChatSendRequest, run: RequestRun, target: Target, extras: RunExtras): Promise<RequestOutcome> {

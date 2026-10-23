@@ -78,7 +78,7 @@ describe("PaletteEnforcer", () => {
     return { gateway, sprite, enforcer: new PaletteEnforcer(gateway) };
   }
 
-  it("enforces the limit on the drawn cels only, as one write", async () => {
+  it("enforces the limit on the layers the run drew only, as one write", async () => {
     const { gateway, sprite, enforcer } = setup();
     const status = await enforcer.enforce(sprite, [{ layer: "AI", frame: 1 }, { layer: "AI", frame: 2 }], { maxColors: 2 });
     expect(status).toBe("Applied the limit of 2 colors: 1 pixel recolored (3 → 2 colors), as one undo step.");
@@ -88,19 +88,20 @@ describe("PaletteEnforcer", () => {
     expect(gateway.pixel("User", 3, 0, 1)).toEqual([0x12, 0x34, 0x56, 255]);
   });
 
-  it("snaps to a forced palette and reports when nothing had to change", async () => {
+  it("snaps every frame of a drawn layer to a forced palette and reports when nothing had to change", async () => {
     const { gateway, sprite, enforcer } = setup();
     const options = { palette: "custom" as const, customPalette: ["#ff0000", "#00ff00"], forcePalette: true };
+    // Only frame 1 is reported as drawn, but the rule holds for the whole layer (frame 2's green too).
     expect(await enforcer.enforce(sprite, [{ layer: "AI", frame: 1 }], options)).toBe(
-      "Applied the custom palette: 1 pixel recolored (2 → 1 color), as one undo step.",
+      "Applied the custom palette: 1 pixel recolored (3 → 2 colors), as one undo step.",
     );
     expect(gateway.pixel("AI", 1, 0, 1)).toEqual([255, 0, 0, 255]);
     gateway.calls.length = 0;
-    expect(await enforcer.enforce(sprite, [{ layer: "AI", frame: 1 }], options)).toBe("Colors already follow the custom palette (1 color).");
+    expect(await enforcer.enforce(sprite, [{ layer: "AI", frame: 1 }], options)).toBe("Colors already follow the custom palette (2 colors).");
     expect(gateway.callsOf("writeImages")).toHaveLength(0);
   });
 
-  it("resolves default layers/frames, every-layer copies and skips layers that are gone or locked", async () => {
+  it("resolves default layers, every-layer copies and skips layers that are gone or locked, on all frames", async () => {
     const { gateway, sprite, enforcer } = setup();
     gateway.state(sprite).activeLayer = "AI";
     await gateway.layerOp({ op: "update", name: "User", editable: false }, { sprite });
@@ -109,7 +110,22 @@ describe("PaletteEnforcer", () => {
       maxColors: 2,
     });
     const reads = gateway.callsOf("readImage").map(([r]) => (r as { layer: string; frame: number }));
-    expect(reads.map((r) => `${r.layer}#${r.frame}`).sort()).toEqual(["AI#1", "AI#2", "Layer 1#2"]);
+    expect(reads.map((r) => `${r.layer}#${r.frame}`).sort()).toEqual(["AI#1", "AI#2", "Layer 1#1", "Layer 1#2"]);
+  });
+
+  it("makes a forced preset the sprite palette before the run, once, and only on RGB sprites", async () => {
+    const { gateway, sprite, enforcer } = setup();
+    const options = { palette: "pico8" as const, forcePalette: true };
+    await enforcer.presetSpritePalette(sprite, options);
+    expect(gateway.callsOf("setPalette")).toHaveLength(1);
+    // Already set: no second undo step.
+    await enforcer.presetSpritePalette(sprite, options);
+    expect(gateway.callsOf("setPalette")).toHaveLength(1);
+    // Not forced, "current" or an indexed sprite: the palette stays.
+    await enforcer.presetSpritePalette(sprite, { palette: "endesga32" });
+    await enforcer.presetSpritePalette(sprite, { palette: "current", forcePalette: true });
+    await enforcer.presetSpritePalette(gateway.addSprite({ colorMode: "indexed" }), options);
+    expect(gateway.callsOf("setPalette")).toHaveLength(1);
   });
 
   it("reads a forced 'current' palette from the sprite, without its transparent slot", async () => {
