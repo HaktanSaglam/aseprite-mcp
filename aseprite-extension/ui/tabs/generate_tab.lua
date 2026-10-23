@@ -15,7 +15,7 @@ return function(form, ui, C)
   form:combo{ id = "genSize", key = "genSize", label = "Size / Style", list = C.SIZES }
   form:combo{ id = "genStyle", key = "genStyle", list = C.STYLES }
   form:newrow()
-  form:combo{ id = "genPalette", key = "genPalette", label = "Palette / View", list = C.PALETTES, onchange = ui.paletteChanged }
+  form:combo{ id = "genPalette", key = "genPalette", label = "Palette / Colors / View", list = C.PALETTES, onchange = ui.paletteChanged }
   form:combo{ id = "genColors", key = "genColors", list = C.COLOR_LIMITS }
   form:combo{ id = "genView", key = "genView", list = C.VIEWS }
   form:newrow()

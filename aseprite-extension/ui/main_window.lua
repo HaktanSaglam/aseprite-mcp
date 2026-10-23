@@ -314,8 +314,9 @@ return function(ctx)
     if form then form:enable("quickUndoRun", not session.busy and undo:steps(activeSpriteId()) ~= nil) end
   end
 
-  -- An offer for "Undo AI run" lasts until the sprite changes in any other way. The
-  -- listener goes as soon as it fired once, so a run drawing later costs nothing.
+  -- "Undo AI run" counts a run's changes from the moment it is sent, and an offer lasts
+  -- until the sprite changes in any other way (see ui/run_undo.lua). Each listener is
+  -- removed when its run or offer ends, so nothing keeps listening to every edit.
   local function watchSprite(id, onChange)
     local sprite = findSprite(id)
     if not sprite then return nil end
@@ -332,7 +333,11 @@ return function(ctx)
   local function syncSpriteWidgets()
     if not form then return end
     syncUndoButton()
-    form:enable("animAllDirections", directionTagCount(app.sprite) > 0)
+    local tagged = directionTagCount(app.sprite) > 0
+    form:enable("animAllDirections", tagged)
+    -- All directions animates each direction from its own pose: Mode stays "New" while
+    -- it applies (the bridge refuses it with in-betweens or continuing).
+    form:enable("animMode", not (tagged and S.get(prefs, "animAllDirections")))
     form:enable("genForcePalette", S.get(prefs, "genPalette") ~= "auto")
   end
 
@@ -553,14 +558,19 @@ return function(ctx)
     return F.truncate(shownLayer, 40)
   end
 
+  -- Why Send would quietly do nothing now, or nil when it sends. Send is the dialog's
+  -- Enter target on every tab: Enter pressed in Generate's Prompt must not send whatever
+  -- was left in the hidden message box. Enter also arrives from outside the window, so
+  -- with nothing typed there is nothing to say.
+  local function chatSendSkipped()
+    if currentTab() ~= "chat" then return "the Chat tab is not shown (switch to it first)" end
+    if not (form:value("chatInput") or ""):find("%S") then return "the message box is empty" end
+    return nil
+  end
+
   handlers.sendChat = function()
-    -- Send is the dialog's Enter target on every tab: Enter pressed in Generate's Prompt
-    -- must not send whatever was left in the hidden message box.
-    if currentTab() ~= "chat" then return end
+    if chatSendSkipped() then return focusChat(false) end
     local text = form:value("chatInput") or ""
-    -- Enter also arrives from outside the window: with nothing typed there is nothing
-    -- to say, so stay quiet.
-    if not text:find("%S") then return focusChat(false) end
     local sent = startRun(function(s, ai, c) return R.chat(text, s, ai, c) end)
     focusChat(sent ~= nil)
   end
@@ -665,7 +675,24 @@ return function(ctx)
   end
   handlers.toolChanged = choiceChanged
   handlers.paletteChanged = choiceChanged
-  handlers.animModeChanged = choiceChanged
+
+  -- All directions can't be combined with Between frames or Continue (the bridge refuses
+  -- it), so the choice made last wins: ticking All directions sets Mode back to New, and
+  -- picking another mode clears the tick (one left over from a sprite with direction tags:
+  -- on a sprite without them Mode can still be changed). The window greys Mode out while
+  -- the tick applies, see syncSpriteWidgets.
+  local function animChoiceChanged(otherKey, otherValue)
+    return function()
+      form:pull()
+      if S.get(prefs, "animAllDirections") and S.get(prefs, "animMode") ~= "new" then
+        S.set(prefs, otherKey, otherValue)
+        form:reload({ otherKey })
+      end
+      choiceChanged()
+    end
+  end
+  handlers.animModeChanged = animChoiceChanged("animAllDirections", false)
+  handlers.allDirectionsChanged = animChoiceChanged("animMode", "new")
 
   handlers.resetAdjust = function()
     form:quietly(function()
@@ -958,6 +985,12 @@ return function(ctx)
     end,
     click = function(id)
       if not form then error("The window is not open", 0) end
+      -- Send ignores what it can't act on without a word (it is the Enter target on every
+      -- tab); a script must hear that nothing was sent instead of waiting for a run.
+      if id == "chatSend" then
+        local skipped = chatSendSkipped()
+        if skipped then error("chatSend sent nothing: " .. skipped, 0) end
+      end
       form:click(id)
     end,
     close = function() M.close() end,

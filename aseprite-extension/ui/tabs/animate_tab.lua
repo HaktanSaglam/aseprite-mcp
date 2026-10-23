@@ -23,9 +23,13 @@ return function(form, ui, C)
   }
   form:newrow()
   -- All directions is greyed out unless the active sprite has direction tags ("down",
-  -- "right", ...), e.g. from Generate's 4/8 directions.
+  -- "right", ...), e.g. from Generate's 4/8 directions. It only works with Mode "New",
+  -- so ticking it sets Mode back to New (and picking another mode clears it).
   form:check{ id = "animLoop", key = "animLoop", label = "Options", text = "Loop" }
-  form:check{ id = "animAllDirections", key = "animAllDirections", text = "All directions" }
+  form:check{
+    id = "animAllDirections", key = "animAllDirections", text = "All directions",
+    onchange = ui.allDirectionsChanged,
+  }
   form:newrow()
   form:entry{ id = "animNotes", key = "animNotes", label = "Notes", placeholder = "e.g. cape flutters, sword trail" }
   form:newrow()
