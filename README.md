@@ -14,9 +14,9 @@ and frames, one Ctrl+Z away. Or connect any [MCP](https://modelcontextprotocol.i
 ![Node 20+](https://img.shields.io/badge/node-20%2B-339933)
 ![Status: actively developed](https://img.shields.io/badge/status-actively%20developed-brightgreen)
 
-<img src="docs/images/hero.png" alt="The Aseprite MCP window inside Aseprite: the request 'an open treasure chest overflowing with gold coins' and the 32x32 chest it drew in 11 seconds" width="860">
+<img src="docs/images/hero.png" alt="The Aseprite MCP window inside Aseprite: the request 'an open treasure chest overflowing with gold coins' and the 32x32 chest Claude Opus drew from it" width="860">
 
-<sub>A real run: one Generate click, 11 seconds, a 32×32 sprite on its own layer.</sub>
+<sub>A real run: one Generate click, Claude Opus, under a minute, a 32×32 sprite on its own layer.</sub>
 
 [Gallery](#gallery) · [Features](#features) · [Install](#install) · [Workflows](#workflows) ·
 [Tools](#tools) · [How it works](#how-it-works) · [Roadmap](#roadmap) · [License](#license)
@@ -40,8 +40,8 @@ makes is ordinary Aseprite content you keep editing — and every AI edit is a s
 
 ## Gallery
 
-Everything below was drawn inside Aseprite by Claude through this extension: no image model, no
-post-processing, just layers and frames.
+Everything below was drawn inside Aseprite by Claude (mostly Opus) through this extension: no image
+model, no post-processing, just layers and frames.
 
 <table>
 <tr>
@@ -52,7 +52,7 @@ turned into 4 facings (the left side is mirrored from the right), then walking i
 </td>
 <td align="center" width="38%">
 <img src="docs/images/wizard-walk.gif" alt="A wizard walking" width="70%"><br>
-<sub><b>Style reference + Animate.</b> The wizard was asked to match the knight's style, then
+<sub><b>Style reference + Animate.</b> The wizard was asked to match the fox's style, then
 given a walk cycle.</sub>
 </td>
 </tr>
@@ -81,9 +81,9 @@ given a walk cycle.</sub>
 </p>
 
 <p align="center">
-  <img src="docs/images/showcase.png" alt="A knight in four directions, a wizard in the knight's style and a glowing mushroom" width="860"><br>
-  <sub>A knight turned into four facings, a wizard drawn with the knight as style reference, and a
-  mushroom limited to the PICO-8 palette.</sub>
+  <img src="docs/images/showcase.png" alt="A fox in four directions, a wizard in the fox's style and a glowing mushroom" width="860"><br>
+  <sub>The fox turned into four facings, a wizard drawn with the fox as style reference, and a
+  mushroom limited to the PICO-8 palette and 6 colors.</sub>
 </p>
 
 <p align="center">
@@ -128,7 +128,8 @@ given a walk cycle.</sub>
 - **Pick power vs. speed**: model (Fable, Opus, Sonnet, Haiku, or another provider) and effort
   (Fast, Balanced, Smart, Max). The window shows each run's time, steps and cost.
 - **Fast**: pixels travel as raw bytes (a 256×256 canvas round-trips in milliseconds), and shapes are
-  drawn by small sandboxed scripts instead of pixel lists. Typical sprites take 10–30 seconds.
+  drawn by small sandboxed scripts instead of pixel lists. A sprite takes 10–30 seconds with Sonnet,
+  about a minute with Opus.
 - **Safe by design**: everything listens on `127.0.0.1` only, scripts run in a QuickJS sandbox, and
   the assistant's model gets only the Aseprite tools — no shell, no file browsing.
 
