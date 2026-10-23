@@ -49,8 +49,20 @@ animation frames and tags, and every change is one Ctrl+Z away.
 - **Animate**: idle, walk, run, jump, attack, hurt, death or custom, with frame timings and tags.
 - **Many at once**: 2–4 variations or a whole batch ("sword; shield; potion") drawn in parallel,
   each in its own tab; a character in 4 or 8 directions.
-- **Review & fix**: the model looks at its work, measures it (`analyze_sprite`) and cleans up
-  stray pixels, broken outlines and muddy colors.
+- **Directions from your art**: turn the sprite you drew into 4 or 8 facings. Your frame stays
+  exactly as it is, the model draws the other sides from it, and left sides are mirrored from
+  the right ones.
+- **Animate every direction**: one click animates the down view, then matches the other facings
+  to it (`walk_down`, `walk_right`, …). Or draw **in-betweens** between two key frames, or
+  **continue** an animation from the frames you keep.
+- **Color rules**: limit the colors (4–32), force a preset palette, or paste your own
+  `#rrggbb` list; a **style reference** makes new art match another open sprite.
+- **Clean up imported art**: *Import PNG* and *Normalize (unzoom)* turn upscaled or AI-generated
+  "pixel art" back into real pixels on a clean grid and palette.
+- **Seamless tiles**: the tile view checks the art repeated 3×3 and fixes the seams.
+- **Review & fix**: the model looks at its work, scores it (`analyze_sprite` gives 0–100 and the
+  concrete problems) and cleans up stray pixels, broken outlines and muddy colors.
+- **Undo AI run**: everything the last run changed on your sprite, back in one click.
 - **Instant tools, no AI needed**: remove background, outline, reduce colors, apply a palette,
   hue/saturation/lightness, cleanup, drop shadow, flip/rotate/shift.
 - **Pick power vs. speed**: model (Fable, Opus, Sonnet, Haiku, or another provider) and effort
@@ -109,6 +121,8 @@ In Aseprite open **Edit › FX › Aseprite MCP › AI Assistant…** (also: *Ge
 Tools…*, *Reconnect Bridge*). The first time, Aseprite asks whether the extension may open a
 connection: tick **Don't show this specific alert again for this script** and click **Allow to
 Open Connections**. The dot at the top of the window turns green once the bridge is connected.
+The first PNG or GIF export asks the same way for write access: check the path and click
+**Allow Write Access**.
 
 Something not working? `node bridge/bin/aseprite-mcp.js doctor` checks every piece and says what to
 fix.
@@ -117,10 +131,10 @@ fix.
 
 | Tab | What it does |
 |---|---|
-| **Chat** | Talk to the model. Pick model and effort, use your selection as the area to change, one-click *Redraw selection*, *Review & fix* and *Variations*. |
-| **Generate** | Text → sprite with size, style, palette, view (front, side, ¾, top-down, isometric), target (new sprite / new layer / active layer), outline, variations, batches and 4/8 directions. |
-| **Animate** | Turn the current sprite into an animation: preset, frame count, frame duration, loop. |
-| **Tools** | Instant edits without AI on the active layer, all frames or just the selection. |
+| **Chat** | Talk to the model. Pick model and effort, use your selection as the area to change, one-click *Redraw selection*, *Review & fix*, *Variations*, *Repeat last* and *Undo AI run*. |
+| **Generate** | Text → sprite with size, style, palette, color limit, view (front, side, ¾, top-down, isometric, seamless tile), target (new sprite / new layer / active layer), outline, variations, batches and 4/8 directions — from your prompt or from the current sprite, optionally matching a reference sprite. |
+| **Animate** | Turn the current sprite into an animation: preset, frame count, frame duration, loop; new, in-betweens or continue; all directions at once. |
+| **Tools** | Instant edits without AI on the active layer, all frames or just the selection, including *Normalize (unzoom)* and *Import PNG*. |
 | **Settings** | AI provider, model, effort, auto-review, bridge port. |
 
 Every AI edit lands on its own layer by default and is a single undo step.
@@ -144,7 +158,8 @@ others, or run `node bridge/bin/aseprite-mcp.js print-config <client>`.
 | Pixels & drawing | `read_pixels` `write_pixels` `view_sprite` `draw_script` `pixel_art_guide` |
 | Structure | `manage_layers` `manage_frames` `manage_tags` `get_selection` `set_selection` |
 | Color | `get_palette` `set_palette` `get_palette_preset` `apply_palette` `reduce_colors` `replace_color` `adjust_colors` |
-| Effects | `add_outline` `remove_background` `cleanup_pixels` `transform_layer` `drop_shadow` `analyze_sprite` |
+| Effects | `add_outline` `remove_background` `cleanup_pixels` `transform_layer` `drop_shadow` `normalize_pixel_art` `analyze_sprite` |
+| Import | `import_image` |
 
 ### Pixel grids
 

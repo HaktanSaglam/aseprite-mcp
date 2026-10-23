@@ -6,7 +6,7 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-## [1.0.0] - 2026-10-22
+## [1.0.0] - 2026-10-23
 
 First public release. Aseprite MCP lets Claude, or any MCP client, draw, edit and animate pixel
 art directly inside Aseprite, with every change a single undo step.
@@ -27,8 +27,12 @@ art directly inside Aseprite, with every change a single undo step.
     `reduce_colors`, `replace_color`, `adjust_colors`, and 11 palette presets: PICO-8, Sweetie 16,
     ENDESGA 32 and 64, DawnBringer 16 and 32, AAP-64, Resurrect 64, Game Boy, NES and 1-bit
   - effects: `add_outline`, `remove_background`, `cleanup_pixels`, `transform_layer`,
-    `drop_shadow`
-  - analysis: `analyze_sprite`
+    `drop_shadow`, `normalize_pixel_art` (detects upscaled or AI-made "pixel art", snaps it back
+    to its real pixel grid and a clean palette)
+  - import: `import_image` (a PNG from disk onto its own layer)
+  - analysis: `analyze_sprite`, with a 0-100 quality score and up to five concrete issues
+    (stray pixels, outline gaps, doubled corners, banding, pillow shading, too many colors, ...),
+    each naming the tool that fixes it
   - Pixel-editing tools can target a layer, the current frame, all frames or a list of frames,
     and only the current selection.
 - **`draw_script`**: the model writes a short drawing program that runs in a sandbox (QuickJS on
@@ -41,7 +45,21 @@ art directly inside Aseprite, with every change a single undo step.
   - model and effort selection, style, palette, canvas size, view, outline and background options
   - edit only the selected area, review-and-fix pass
   - parallel jobs: variations, batches (one sprite per item) and 4 or 8 facing directions
-  - instant, non-AI tools (outline, background removal, color reduction, palette mapping, ...)
+  - **directions from your own art**: the current sprite becomes frame 1 untouched, the model
+    draws the other facings from it, and left-facing frames are mirrored from the right ones
+    and then touched up
+  - **animate every direction at once**: down first, then the other facings matched to it
+    (`walk_down`, `walk_right`, ...), mirrored where possible
+  - **in-betweens and continue**: draw frames between two key frames, or keep the first frames
+    of an animation and let the model finish it
+  - **color rules**: a color limit (4-32), a forced preset palette, or your own `#rrggbb` list,
+    enforced after the run in one undo step
+  - **style reference**: match another open sprite's palette, outlines and proportions
+  - **seamless tiles**: a tile view whose preview repeats the tile 3x3 and checks the seams
+  - **Undo AI run** (everything the last run changed, in one click), **Repeat last**, and
+    Generate settings remembered per sprite
+  - instant, non-AI tools (outline, background removal, color reduction, palette mapping,
+    Normalize (unzoom), Import PNG, ...)
 - **AI providers**: Claude Code with your own subscription (default), plus experimental Codex
   CLI, Gemini CLI, OpenAI-compatible APIs and the Anthropic API, configured in
   `~/.aseprite-mcp/config.json`.
