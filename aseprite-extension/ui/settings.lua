@@ -30,12 +30,21 @@ return function(C)
     genTransparent = { kind = "bool", default = true },
     genVariations = { kind = "enum", list = C.VARIATIONS, default = "1" },
     genBatch = { kind = "string", default = "" },
+    genSource = { kind = "enum", list = C.SOURCES, default = "prompt" },
+    genColors = { kind = "enum", list = C.COLOR_LIMITS, default = "auto" },
+    genForcePalette = { kind = "bool", default = false },
+    genCustomPalette = { kind = "string", default = "" },
 
     animPreset = { kind = "enum", list = C.ANIMATIONS, default = "idle" },
     animFrames = { kind = "int", min = 2, max = 16, default = 4 },
     animFrameMs = { kind = "int", min = 10, max = 2000, default = 200 },
     animLoop = { kind = "bool", default = true },
     animNotes = { kind = "string", default = "" },
+    animAllDirections = { kind = "bool", default = false },
+    animMode = { kind = "enum", list = C.ANIMATION_MODES, default = "new" },
+    animFrom = { kind = "int", min = 1, max = 9999, default = 1 },
+    animTo = { kind = "int", min = 1, max = 9999, default = 2 },
+    animKeep = { kind = "int", min = 1, max = 9999, default = 1 },
 
     toolSelectionOnly = { kind = "bool", default = false },
     toolAllFrames = { kind = "bool", default = false },
@@ -50,6 +59,15 @@ return function(C)
     toolHue = { kind = "int", min = -180, max = 180, default = 0 },
     toolSaturation = { kind = "int", min = -100, max = 100, default = 0 },
     toolLightness = { kind = "int", min = -100, max = 100, default = 0 },
+    toolNormColors = { kind = "enum", list = C.COLOR_LIMITS, default = "auto" },
+    toolNormCleanup = { kind = "bool", default = true },
+    toolImportPath = { kind = "string", default = "", max = 4096 },
+
+    -- The last chat_send as JSON, for "Repeat last", and the window session that sent
+    -- it: sprite ids start over when Aseprite restarts, so an older request's ids name
+    -- other sprites (see requests.repeatLast).
+    lastRequest = { kind = "string", default = "", max = 60000 },
+    lastRequestSession = { kind = "string", default = "" },
 
     port = { kind = "int", min = 1, max = 65535, default = 7801 },
     devMode = { kind = "bool", default = false },
@@ -69,7 +87,7 @@ return function(C)
       return spec.default
     elseif kind == "string" then
       if type(value) ~= "string" then return spec.default end
-      return value:sub(1, MAX_TEXT)
+      return value:sub(1, spec.max or MAX_TEXT)
     elseif kind == "optstring" then
       if type(value) == "string" and value ~= "" then return value:sub(1, 200) end
       return spec.default

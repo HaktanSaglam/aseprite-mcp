@@ -11,6 +11,8 @@
 --     came in between; a separator always gets its own row. Each widget records its
 --     row in w.row. modify{visible} hides a widget; a row whose widgets are all hidden
 --     takes no room (ui::Grid skips hidden cells), which D:_rows reflects.
+--   * file{} is a FilenameField: its data is the picked path, and setting a different
+--     path (picker, modify{filename}, data) fires onchange; the same path fires nothing.
 -- Methods starting with "_" simulate the user (click, type, pick an option); like a
 -- real user they can't reach hidden widgets.
 
@@ -109,6 +111,7 @@ local function add(dlg, kind, spec)
     if w.option == nil then w.option = w.options[1] end
   end
   if kind == "color" then w.color = spec.color or Color{ r = 0, g = 0, b = 0, a = 0 } end
+  if kind == "file" then w.filename = spec.filename or "" end
   if spec.focus then w.focusMagnet = true end
   w.tab = dlg.currentTab
   local rowType = ROW_TYPE[kind] or kind
@@ -125,7 +128,7 @@ local function add(dlg, kind, spec)
   return dlg
 end
 
-for _, kind in ipairs({ "entry", "number", "label", "check", "button", "slider", "combobox", "color", "canvas", "separator" }) do
+for _, kind in ipairs({ "entry", "number", "label", "check", "button", "slider", "combobox", "color", "canvas", "separator", "file" }) do
   D[kind] = function(self, spec)
     if type(spec) == "string" then spec = { text = spec } end
     return add(self, kind, spec or {})
@@ -186,6 +189,13 @@ function D:repaint()
   end
 end
 
+-- FilenameField::setFilename: Change only when the path differs.
+local function setFilename(dlg, w, path)
+  if w.filename == path then return end
+  w.filename = path
+  fire(dlg, w.spec.onchange)
+end
+
 local function selectOption(dlg, w, label)
   for _, o in ipairs(w.options) do
     if o == label then
@@ -221,6 +231,7 @@ function D:modify(spec)
   end
   if spec.option ~= nil and w.kind == "combobox" then selectOption(self, w, spec.option) end
   if spec.color ~= nil and w.kind == "color" then w.color = spec.color end
+  if spec.filename ~= nil and w.kind == "file" then setFilename(self, w, tostring(spec.filename)) end
   self.modifyCount = (self.modifyCount or 0) + 1
   return self
 end
@@ -242,6 +253,8 @@ local function getData(dlg)
         data[w.id] = w.option
       elseif k == "color" then
         data[w.id] = w.color
+      elseif k == "file" then
+        data[w.id] = w.filename
       elseif k == "tabs" then
         data[w.id] = w.selected
       end
@@ -271,6 +284,8 @@ local function setData(dlg, t)
         end
       elseif k == "color" then
         w.color = v or Color{ r = 0, g = 0, b = 0, a = 0 }
+      elseif k == "file" then
+        if type(v) == "string" then setFilename(dlg, w, v) end
       elseif k == "tabs" then
         if type(v) == "string" then
           for _, tab in ipairs(w.tabs) do
@@ -365,6 +380,13 @@ function D:_slide(id, value)
   local w = self:_visible(id)
   w.value = value
   fire(self, w.spec.onchange)
+end
+
+-- The user clicks a file{} button and picks `path` in the file dialog.
+function D:_pickFile(id, path)
+  local w = self:_visible(id)
+  assert(w.enabled, id .. " is disabled")
+  setFilename(self, w, path)
 end
 
 function D:_tab(tabId)

@@ -29,6 +29,8 @@ return function(ctx)
   local Header = load("ui/header_view.lua")(textRender, W)
   local Panels = load("ui/panels.lua")(T, F, Header)
   local Bounds = load("ui/bounds.lua")
+  local RunUndo = load("ui/run_undo.lua")
+  local SpriteSettings = load("ui/sprite_settings.lua")(S)
 
   local TABS = {
     { id = "chat", text = "Chat", build = load("ui/tabs/chat_tab.lua") },
@@ -51,12 +53,19 @@ return function(ctx)
 
   -- Buttons that start an AI run; disabled while one is running.
   local RUN_BUTTONS = {
-    "chatSend", "quickRedraw", "quickReview", "quickVariations",
+    "chatSend", "quickRedraw", "quickReview", "quickVariations", "quickRepeat",
     "genGenerate", "genDir4", "genDir8", "genBatchRun", "animRun",
   }
 
   -- The Tools tab's status label is one short line; the chat log gets the full version.
   local OFFLINE_SHORT = "Bridge offline - start it with: npm start"
+
+  -- Reference box entries are sprite tab names, cut to keep the Generate row narrow.
+  local REFERENCE_CHARS = 20
+
+  -- Identifies this Aseprite session for "Repeat last": sprite ids start over after a
+  -- restart, so a request stored by an earlier session names other sprites.
+  local SESSION = string.format("%d-%06d", os.time(), math.random(0, 999999))
 
   local M = {}
 
@@ -76,6 +85,11 @@ return function(ctx)
   -- The message being typed. Not a setting (it shouldn't outlive Aseprite), but it must
   -- survive closing the window and the rebuild an older Aseprite needs after bridge_info.
   local draft = ""
+  -- The Generate tab's Reference choice (a sprite id string, nil for None). Not a setting
+  -- either: after a restart the same id names another sprite.
+  local referenceId = nil
+  -- The sprite whose remembered Generate settings the tab shows (see restoreSpriteSettings).
+  local settingsSprite = nil
 
   -- Says what to do, and on which port: a bridge started with --ws-port elsewhere is
   -- as unreachable as one that isn't running.
@@ -171,12 +185,75 @@ return function(ctx)
     return found or layer.name
   end
 
+  local function findSprite(id)
+    if id == nil then return nil end
+    local ok, found = pcall(function()
+      for _, s in ipairs(app.sprites) do
+        if s.id == id then return s end
+      end
+      return nil
+    end)
+    return ok and found or nil
+  end
+
+  local function activeSpriteId()
+    local ok, id = pcall(function() return app.sprite and app.sprite.id or nil end)
+    return ok and id or nil
+  end
+
+  local function directionTagCount(sprite)
+    local ok, n = pcall(function()
+      local count = 0
+      for _, tag in ipairs(sprite.tags) do
+        if C.isDirectionTag(tag.name) then count = count + 1 end
+      end
+      return count
+    end)
+    return ok and n or 0
+  end
+
+  -- The sprite's tab name ("knight.aseprite", "Sprite-0001") for native widgets.
+  local function spriteName(sprite)
+    local ok, name = pcall(function() return app.fs.fileName(sprite.filename) end)
+    if not ok or not name or name == "" then name = "Sprite " .. tostring(sprite.id) end
+    return textRender.forWidget(name)
+  end
+
+  -- None plus every open sprite, oldest first so the list doesn't reshuffle as sprites
+  -- open. Labels must be unique (the combobox reports labels), so a name that repeats
+  -- gets its sprite id.
+  local function referenceList()
+    local list = { C.NO_REFERENCE }
+    local used = { [C.NO_REFERENCE.label] = true }
+    pcall(function()
+      local sprites = {}
+      for _, sprite in ipairs(app.sprites) do sprites[#sprites + 1] = sprite end
+      table.sort(sprites, function(a, b) return a.id < b.id end)
+      for _, sprite in ipairs(sprites) do
+        local label = F.truncate(spriteName(sprite), REFERENCE_CHARS)
+        if used[label] then
+          label = F.truncate(spriteName(sprite), REFERENCE_CHARS - 6) .. " #" .. sprite.id
+        end
+        used[label] = true
+        list[#list + 1] = { id = tostring(sprite.id), label = label }
+      end
+    end)
+    return list
+  end
+
   local function spriteContext()
     local ok, result = pcall(function()
       local c = {}
+      c.openSprites = {}
+      for _, s in ipairs(app.sprites) do c.openSprites[s.id] = true end
+      if referenceId then
+        local id = tonumber(referenceId)
+        if id and c.openSprites[id] then c.reference = id else c.referenceGone = true end
+      end
       local sprite = app.sprite
       if not sprite then return c end
-      c.sprite = { id = sprite.id, width = sprite.width, height = sprite.height }
+      c.sprite = { id = sprite.id, width = sprite.width, height = sprite.height, frames = #sprite.frames }
+      c.directionTags = directionTagCount(sprite)
       local selection = sprite.selection
       if selection and not selection.isEmpty then
         local b = selection.bounds
@@ -231,9 +308,40 @@ return function(ctx)
     if timer and timer.isRunning then timer:stop() end
   end
 
+  local undo
+
+  local function syncUndoButton()
+    if form then form:enable("quickUndoRun", not session.busy and undo:steps(activeSpriteId()) ~= nil) end
+  end
+
+  -- An offer for "Undo AI run" lasts until the sprite changes in any other way. The
+  -- listener goes as soon as it fired once, so a run drawing later costs nothing.
+  local function watchSprite(id, onChange)
+    local sprite = findSprite(id)
+    if not sprite then return nil end
+    local code = sprite.events:on("change", function()
+      pcall(onChange)
+      pcall(syncUndoButton)
+    end)
+    return function() sprite.events:off(code) end
+  end
+
+  undo = RunUndo.new(watchSprite)
+
+  -- Widgets whose state depends on the active sprite or on other choices.
+  local function syncSpriteWidgets()
+    if not form then return end
+    syncUndoButton()
+    form:enable("animAllDirections", directionTagCount(app.sprite) > 0)
+    form:enable("genForcePalette", S.get(prefs, "genPalette") ~= "auto")
+  end
+
   -- Copies the session state into widgets; called after anything changed it, and by the
   -- spinner several times a second (Form only sends actual changes to the dialog).
   local function sync()
+    -- However the run ended (busy = false, an error, Stop, a lost bridge), a "done" that
+    -- arrives later can't be told apart from the next run's.
+    if not session.busy then undo:ended() end
     if form then
       for _, id in ipairs(RUN_BUTTONS) do form:enable(id, not session.busy) end
       form:enable("chatStop", session.busy)
@@ -241,6 +349,7 @@ return function(ctx)
         shownToolText = session.toolText
         form:setText("toolStatus", F.truncate(textRender.forWidget(shownToolText or ""), 56))
       end
+      syncSpriteWidgets()
     end
     syncTimer()
     repaint()
@@ -297,6 +406,8 @@ return function(ctx)
       if kind ~= "event" or payload == nil then return end
       local event = payload.event
       if event == "chat" then
+        -- Before the session sees it: "done" must reach the run it belongs to.
+        if payload.kind == "done" then undo:done(payload.stats) end
         if session:chatEvent(payload) then sync() end
       elseif event == "tool_result" then
         session:toolResult(payload)
@@ -333,8 +444,24 @@ return function(ctx)
     end)
   end
 
+  -- For "Repeat last". A request too big for the prefs isn't stored rather than cut.
+  local function rememberRequest(payload)
+    local ok, text = pcall(json.encode, payload)
+    if not ok or S.coerce("lastRequest", text) ~= text then return end
+    S.set(prefs, "lastRequest", text)
+    S.set(prefs, "lastRequestSession", SESSION)
+  end
+
+  -- The active sprite's tab name, for log lines.
+  local function activeSpriteName()
+    local sprite = app.sprite
+    return sprite and spriteName(sprite) or "this sprite"
+  end
+
   -- build(settings, ai, spriteContext) -> payload | nil, error (see ui/requests.lua).
-  local function startRun(build)
+  -- opts.echo: text before the log's echo of the request; opts.onSent(payload).
+  local function startRun(build, opts)
+    opts = opts or {}
     if not form then return nil end
     if session.busy then
       fail("Still working. Press Stop to cancel the current run.")
@@ -351,10 +478,54 @@ return function(ctx)
       return nil
     end
     lastError = nil
-    session:sent(R.describe(payload))
+    rememberRequest(payload)
+    session:sent((opts.echo or "") .. R.describe(payload))
+    undo:started(R.boundSprite(payload))
+    if opts.onSent then pcall(opts.onSent, payload) end
     logView:toBottom()
     sync()
     return payload
+  end
+
+  -- Generate tab requests are remembered by the sprite they were made from (see
+  -- ui/sprite_settings.lua), so the tab shows them again for that sprite.
+  local function rememberSettings(payload)
+    local sprite = app.sprite
+    if not sprite or payload.sprite ~= sprite.id then return end
+    if SpriteSettings.save(sprite, S.snapshot(prefs)) then settingsSprite = sprite.id end
+  end
+
+  local GENERATE_RUN = { onSent = rememberSettings }
+
+  -- When the Generate tab opens on a sprite other than the one whose settings it shows,
+  -- that sprite's remembered settings replace the tab's. Not on every visit: switching
+  -- to Chat and back must not throw away what the user just typed.
+  local function restoreSpriteSettings()
+    local sprite = app.sprite
+    local id = sprite and sprite.id or nil
+    if id == nil or id == settingsSprite then return end
+    settingsSprite = id
+    local loaded = SpriteSettings.load(sprite)
+    if not loaded then return end
+    -- What the widgets show is what gets compared and replaced.
+    if form then form:pull() end
+    local changed = SpriteSettings.apply(prefs, loaded)
+    if #changed == 0 then return end
+    if form then
+      form:reload(changed)
+      form:applyVisibility(S.snapshot(prefs))
+      syncSpriteWidgets()
+    end
+    log:add("status", "Generate: loaded the settings last used with " .. activeSpriteName() .. ".")
+  end
+
+  -- Refills the Reference box with the sprites open now. A box that can't be refilled
+  -- (older Aseprite) keeps its list: rebuilding the dialog on every visit would flicker.
+  local function refreshReference()
+    if not form then return end
+    local list = referenceList()
+    if referenceId and not C.find(list, referenceId) then referenceId = nil end
+    form:setOptions("genReference", list, referenceId or C.NO_REFERENCE.id)
   end
 
   local handlers = {}
@@ -404,11 +575,46 @@ return function(ctx)
     focusChat(sent ~= nil)
   end
 
-  handlers.generate = function() startRun(R.generate) end
-  handlers.batch = function() startRun(R.batch) end
+  handlers.generate = function() startRun(R.generate, GENERATE_RUN) end
+  handlers.batch = function() startRun(R.batch, GENERATE_RUN) end
   handlers.animate = function() startRun(R.animate) end
   handlers.directions = function(n)
-    startRun(function(s, ai, c) return R.directions(n, s, ai, c) end)
+    startRun(function(s, ai, c) return R.directions(n, s, ai, c) end, GENERATE_RUN)
+  end
+
+  -- startRun refuses while a run is going, like every other run button.
+  handlers.repeatLast = function()
+    startRun(function(_, _, c)
+      return R.repeatLast(S.get(prefs, "lastRequest"), c, S.get(prefs, "lastRequestSession") == SESSION)
+    end, { echo = "Repeat: " })
+  end
+
+  -- Takes back exactly the steps the last run on the active sprite added (the button is
+  -- only enabled while that history is untouched; see ui/run_undo.lua).
+  handlers.undoRun = function()
+    if session.busy then return fail("Still working. Press Stop to cancel the current run.") end
+    local id = activeSpriteId()
+    local steps = undo:steps(id)
+    if not steps then
+      session:toolStatus("Undo AI run: nothing to undo on this sprite since its last AI run.", "error", true)
+      logView:toBottom()
+      return sync()
+    end
+    local requestId = session:nextRequestId()
+    if send(R.undoRun(requestId, id, steps)) then
+      undo:take(id)
+      session:toolSent(requestId, "Undo AI run")
+    else
+      session:toolStatus(OFFLINE_SHORT, "error", false)
+    end
+    sync()
+  end
+
+  handlers.referenceOptions = referenceList
+  handlers.selectedReference = function() return referenceId or C.NO_REFERENCE.id end
+  handlers.referenceChanged = function()
+    local id = form:value("genReference")
+    referenceId = (id ~= nil and id ~= C.NO_REFERENCE.id) and id or nil
   end
 
   -- A second Stop while the bridge hasn't confirmed the first ends the run here.
@@ -449,12 +655,17 @@ return function(ctx)
     handlers.tool(R.applyKey(S.snapshot(prefs)))
   end
 
-  -- Shows the settings of the picked tool (and the outline color only when it's used).
-  handlers.toolChanged = function()
+  -- Shows the settings that apply to the new choice: the picked tool's (and the outline
+  -- color only when it's used), the Custom palette row, the animation mode's frames.
+  local function choiceChanged()
     form:pull()
     form:applyVisibility(S.snapshot(prefs))
+    syncSpriteWidgets()
     repaint()
   end
+  handlers.toolChanged = choiceChanged
+  handlers.paletteChanged = choiceChanged
+  handlers.animModeChanged = choiceChanged
 
   handlers.resetAdjust = function()
     form:quietly(function()
@@ -542,6 +753,9 @@ return function(ctx)
     local id = sprite and sprite.id or nil
     if id ~= shownSprite then
       shownSprite = id
+      -- Opening or closing a sprite also lands here: keep the Reference list current.
+      refreshReference()
+      syncSpriteWidgets()
       repaint()
     end
   end
@@ -603,6 +817,12 @@ return function(ctx)
     if validTab(tab) then S.set(prefs, "tab", tab) end
     if tab == "tools" then refreshLayerLabel() end
     if tab == "chat" then focusChat(false) end
+    if tab == "generate" then
+      refreshReference()
+      restoreSpriteSettings()
+    end
+    -- Tags may have changed since (All directions).
+    syncSpriteWidgets()
     repaint()
   end
 
@@ -665,6 +885,8 @@ return function(ctx)
       return
     end
     if tab then S.set(prefs, "tab", tab) end
+    -- Opening on Generate counts as opening that tab; the widgets are built from prefs.
+    if S.get(prefs, "tab") == "generate" then pcall(restoreSpriteSettings) end
     -- Dialog() returns nil without a UI (aseprite -b), which ends up here.
     local d = build(S.get(prefs, "tab"))
     if not d then return end

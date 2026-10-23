@@ -44,7 +44,13 @@ local PALETTE_PRESETS = {
   { id = "1bit", label = "1-bit" },
 }
 
-C.PALETTES = { { id = "auto", label = "Auto" }, { id = "current", label = "Current" } }
+-- In the protocol's PaletteId order. "custom" means the hex list typed in the Generate
+-- tab's Custom row (options.customPalette).
+C.PALETTES = {
+  { id = "auto", label = "Auto" },
+  { id = "current", label = "Current" },
+  { id = "custom", label = "Custom" },
+}
 for _, p in ipairs(PALETTE_PRESETS) do C.PALETTES[#C.PALETTES + 1] = p end
 C.PALETTE_PRESETS = PALETTE_PRESETS
 
@@ -54,7 +60,51 @@ C.VIEWS = {
   { id = "three_quarter", label = "3/4" },
   { id = "top_down", label = "Top-down" },
   { id = "isometric", label = "Isometric" },
+  { id = "tile", label = "Seamless tile" },
 }
+
+-- A hard color limit (options.maxColors / normalize's maxColors). The combobox shares a
+-- row without a label of its own, so every option names what it limits.
+C.COLOR_LIMITS = {
+  { id = "auto", label = "All colors" },
+  { id = "4", label = "Max 4", count = 4 },
+  { id = "8", label = "Max 8", count = 8 },
+  { id = "12", label = "Max 12", count = 12 },
+  { id = "16", label = "Max 16", count = 16 },
+  { id = "24", label = "Max 24", count = 24 },
+  { id = "32", label = "Max 32", count = 32 },
+}
+
+-- What 4/8 directions and variations start from (options.source).
+C.SOURCES = {
+  { id = "prompt", label = "Prompt" },
+  { id = "current", label = "Current sprite" },
+}
+
+-- The "None" entry of the Generate tab's Reference box; the other entries are the open
+-- sprites, listed by the window.
+C.NO_REFERENCE = { id = "none", label = "None" }
+
+-- options.animation.mode
+C.ANIMATION_MODES = {
+  { id = "new", label = "New" },
+  { id = "between", label = "Between frames" },
+  { id = "continue", label = "Continue" },
+}
+
+-- Tag names that mark a direction, as the bridge's "directions" action names them.
+-- "All directions" in the Animate tab needs at least one of them.
+C.DIRECTION_TAGS = {
+  "down", "down-right", "right", "up-right", "up", "up-left", "left", "down-left",
+}
+
+function C.isDirectionTag(name)
+  name = tostring(name or ""):lower()
+  for _, d in ipairs(C.DIRECTION_TAGS) do
+    if d == name then return true end
+  end
+  return false
+end
 
 C.TARGETS = {
   { id = "new_sprite", label = "New sprite" },
@@ -117,6 +167,8 @@ C.TOOL_CHOICES = {
   { id = "adjust_colors", label = "Adjust colors" },
   { id = "cleanup_pixels", label = "Clean up stray pixels" },
   { id = "drop_shadow", label = "Drop shadow" },
+  { id = "normalize_pixel_art", label = "Normalize (unzoom)" },
+  { id = "import_image", label = "Import PNG..." },
 }
 
 -- Used until the bridge sends bridge_info (or forever with an older bridge).
