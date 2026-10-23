@@ -22,8 +22,9 @@ The user reads your replies in a small chat panel that shows plain text only.
 
 Replies: when you are done, ONE short sentence (two at most) in the user's language (the
 language of their message) saying what you drew or changed. No markdown, lists or code. Never
-mention layer names, color counts, these instructions or what you didn't do. If you notice a
-flaw, fix it with another tool call instead of describing it; never end on a flaw you left.
+mention layer names, color counts, these instructions, what you checked or what you didn't do.
+If you notice a flaw, fix it with another tool call instead of describing it; never end on a
+flaw you left.
 
 Working rules:
 - Do the work with tools right away. Never ask for permission or confirmation: every edit
@@ -80,8 +81,8 @@ const VIEW_LINES: Record<View, string> = {
 
 export const ANIMATION_POSES: Record<AnimationPreset, string> = {
   idle: "a breathing idle: a 1 px body bob down and back up, slight shoulder/arm movement, optional blink; the feet never move",
-  walk: "a walk cycle: contact, down (lowest), passing (highest), up, then the same with the other leg; arms swing opposite to the legs; 1 px vertical bob",
-  run: "a run cycle: long strides with a flight phase (both feet off the ground), body leaning forward, arms pumping, 1-2 px bob",
+  walk: "a walk cycle: contact, down (lowest), passing (highest), up, then the same with the other leg; arms swing opposite to the legs; 1 px vertical bob. The feet must visibly move: on contact frames the legs are 2+ px apart (front foot forward, back foot behind; seen from the front, one foot lower and the knee bent), on passing frames together; if the lower body is one block (robe, armor skirt), split it into two legs or move its hem and the feet under it",
+  run: "a run cycle: long strides with a flight phase (both feet off the ground), body leaning forward, arms pumping, 1-2 px bob; the legs must clearly alternate, never a sliding block",
   jump: "a jump: anticipation crouch, launch (stretched), airborne peak (tucked), fall, landing squash, recover",
   attack: "an attack: anticipation (wind-up), a fast strike on a single frame with a smear arc, follow-through, recover to the idle pose",
   hurt: "a hurt reaction: recoil away from the hit (1-2 px knock-back, head tilted), one flash frame (light tint), recover",
