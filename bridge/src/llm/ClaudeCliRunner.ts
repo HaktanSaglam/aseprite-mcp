@@ -1,142 +1,230 @@
-import { spawn } from "node:child_process";
-import { mkdirSync } from "node:fs";
-import { createInterface } from "node:readline";
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { CLAUDE_MCP_SERVER, claudeErrorMessage, claudeUserMessage, parseClaudeLine } from "./claudeStream.js";
+import { JsonLineProcess, type ProcessOutput } from "./cli/JsonLineProcess.js";
+import { which } from "./cli/which.js";
+import { claudeChildEnv } from "./claudeEnv.js";
 import type { ILlmRunner, LlmEvent, LlmRunRequest } from "./LlmRunner.js";
 
 interface Options {
   /** Executable name or path of the Claude Code CLI. */
   claudePath: string;
-  /** MCP endpoint of this bridge, so the headless run can draw in Aseprite. */
-  mcpUrl: string;
   /** Empty working directory: keeps project CLAUDE.md files and file tools out of the run. */
   workDir: string;
-  systemPrompt: string;
+  /** Keep the CLI process of a conversation alive between messages (default true). */
+  warm?: boolean;
+  /** A warm process with no new message for this long is stopped (default 10 min). */
+  idleTimeoutMs?: number;
+  /** Each warm process holds a few hundred MB, so only the most recent ones stay. */
+  maxWarmProcesses?: number;
 }
 
-const MCP_SERVER_NAME = "aseprite";
-const TOOL_PREFIX = `mcp__${MCP_SERVER_NAME}__`;
+const TOOL_PATTERN = `mcp__${CLAUDE_MCP_SERVER}__*`;
+const DEFAULT_IDLE_MS = 10 * 60_000;
+const INSTALL_HINT =
+  "Install it with `npm install -g @anthropic-ai/claude-code` and run `claude auth login`, or set CLAUDE_PATH to its full path.";
+
+/** A CLI process can only continue a conversation started with the same flags. */
+function processKey(request: LlmRunRequest): string {
+  return JSON.stringify([request.model ?? "", request.effort ?? "", request.mcpUrl, request.systemPrompt]);
+}
+
+/** One running `claude -p --input-format stream-json` process. */
+interface LiveProcess {
+  proc: JsonLineProcess;
+  key: string;
+  sessionId?: string;
+  /** Session cost already counted before this process's next turn. */
+  costBaseline?: number;
+  idleTimer?: NodeJS.Timeout;
+}
 
 /**
- * Variables that mark "running inside another Claude Code session". Inheriting them
- * (e.g. when the bridge is started from a Claude terminal) makes the child use the
- * parent's short-lived credentials instead of the user's own login.
+ * Runs the user's Claude Code CLI headless, restricted to this bridge's Aseprite tools.
+ *
+ * Speed: starting the CLI (Node boot, login check, MCP handshake) costs a second or more
+ * per message. With stream-json input the process can take the next user message on
+ * stdin, so each conversation keeps its process warm until it idles out; an aborted or
+ * evicted conversation continues later with `--resume`.
  */
-function childEnv(): NodeJS.ProcessEnv {
-  const env = { ...process.env };
-  for (const key of Object.keys(env)) {
-    if (key === "CLAUDECODE" || key.startsWith("CLAUDE_CODE_")) delete env[key];
-  }
-  return env;
-}
-
-/** One line of `claude -p --output-format stream-json` mapped to zero or more UI events. */
-function mapStreamLine(msg: any): LlmEvent[] {
-  if (msg.type === "system" && msg.subtype === "init") {
-    return [{ type: "session", sessionId: msg.session_id }];
-  }
-  if (msg.type === "system" && msg.subtype === "api_retry") {
-    return [{ type: "retry", attempt: msg.attempt, reason: String(msg.error ?? msg.error_status) }];
-  }
-  // "<synthetic>" messages are the CLI echoing its own errors; the result line reports those.
-  if (msg.type === "assistant" && msg.message?.model !== "<synthetic>") {
-    const events: LlmEvent[] = [];
-    for (const block of msg.message?.content ?? []) {
-      if (block.type === "text" && block.text.trim()) events.push({ type: "text", text: block.text });
-      if (block.type === "tool_use") {
-        events.push({ type: "tool", name: String(block.name).replace(TOOL_PREFIX, "") });
-      }
-    }
-    return events;
-  }
-  if (msg.type === "result") {
-    if (!msg.is_error) return [{ type: "done", ok: true }];
-    const error =
-      msg.api_error_status === 401
-        ? "Claude CLI login expired. Run `claude auth login` in Terminal, then try again."
-        : String(msg.result ?? msg.subtype ?? "Claude run failed");
-    return [{ type: "done", ok: false, error }];
-  }
-  return [];
-}
-
-/** Runs the user's Claude Code CLI headless, restricted to this bridge's Aseprite tools. */
 export class ClaudeCliRunner implements ILlmRunner {
+  private readonly warmPool = new Map<string, LiveProcess>();
+  /** Sessions this runner created, with their last known cumulative cost. */
+  private readonly sessions = new Map<string, { totalCostUsd?: number }>();
+  private readonly running = new Set<string>();
+
   constructor(private readonly options: Options) {
     mkdirSync(options.workDir, { recursive: true });
   }
 
   async *run(request: LlmRunRequest): AsyncIterable<LlmEvent> {
-    const mcpConfig = { mcpServers: { [MCP_SERVER_NAME]: { type: "http", url: this.options.mcpUrl } } };
+    // Session ids from another provider (or a previous bridge run) cannot be resumed here.
+    const resumeId = request.sessionId && this.sessions.has(request.sessionId) ? request.sessionId : undefined;
+    if (resumeId && this.running.has(resumeId)) {
+      yield { type: "done", ok: false, error: "This conversation is still working on the previous message." };
+      return;
+    }
+    const key = processKey(request);
+    let live = resumeId ? this.takeWarm(resumeId, key) : undefined;
+    if (!live) {
+      if (resumeId) this.evict(resumeId);
+      live = this.spawn(request, resumeId);
+    }
+    if (resumeId) this.running.add(resumeId);
+    try {
+      yield* this.turn(live, request);
+    } finally {
+      if (resumeId) this.running.delete(resumeId);
+    }
+  }
+
+  /** Stops every warm process (bridge shutdown). */
+  dispose(): void {
+    for (const sessionId of [...this.warmPool.keys()]) this.evict(sessionId);
+  }
+
+  /**
+   * Writes per-run settings into the work dir. Named by content hash: parallel runs with
+   * the same content share one file and different contents never overwrite each other.
+   */
+  private runFile(kind: string, ext: string, content: string): string {
+    const hash = createHash("sha256").update(content).digest("hex").slice(0, 16);
+    const path = join(this.options.workDir, `${kind}-${hash}.${ext}`);
+    if (!existsSync(path)) writeFileSync(path, content);
+    return path;
+  }
+
+  private spawn(request: LlmRunRequest, resumeId: string | undefined): LiveProcess {
+    const mcpConfig = { mcpServers: { [CLAUDE_MCP_SERVER]: { type: "http", url: request.mcpUrl } } };
     const args = [
       "-p",
+      "--input-format", "stream-json",
       "--output-format", "stream-json",
       "--verbose",
-      "--mcp-config", JSON.stringify(mcpConfig),
+      // Files rather than inline strings: on Windows the CLI is a .cmd shim and cmd.exe
+      // can't pass newlines (the system prompt) or keep JSON quoting intact.
+      "--mcp-config", this.runFile("mcp", "json", JSON.stringify(mcpConfig)),
       "--strict-mcp-config",
       // No built-in tools (Bash, Edit, ...): the run may only touch Aseprite.
       "--tools", "",
-      "--allowedTools", `${TOOL_PREFIX}*`,
+      "--allowedTools", TOOL_PATTERN,
       "--setting-sources", "",
-      "--append-system-prompt", this.options.systemPrompt,
+      "--append-system-prompt-file", this.runFile("system", "txt", request.systemPrompt),
     ];
     if (request.model) args.push("--model", request.model);
-    if (request.sessionId) args.push("--resume", request.sessionId);
+    if (request.effort) args.push("--effort", request.effort);
+    if (resumeId) args.push("--resume", resumeId);
 
-    const child = spawn(this.options.claudePath, args, {
-      cwd: this.options.workDir,
-      env: childEnv(),
-      stdio: ["pipe", "pipe", "pipe"],
-    });
+    const command = which(this.options.claudePath) ?? this.options.claudePath;
+    const proc = new JsonLineProcess(command, args, { cwd: this.options.workDir, env: claudeChildEnv() });
+    return {
+      proc,
+      key: processKey(request),
+      sessionId: resumeId,
+      costBaseline: resumeId ? this.sessions.get(resumeId)?.totalCostUsd : 0,
+    };
+  }
 
-    const onAbort = () => child.kill("SIGTERM");
-    request.signal?.addEventListener("abort", onAbort, { once: true });
+  private async *turn(live: LiveProcess, request: LlmRunRequest): AsyncGenerator<LlmEvent> {
+    const keepWarm = (this.options.warm ?? true) && request.keepAlive !== false;
+    live.proc.ref();
+    live.proc.send(claudeUserMessage(request.prompt, request.images));
+    // Without stdin EOF the CLI waits for another message; a one-shot run must close it.
+    if (!keepWarm) live.proc.endInput();
 
-    let stderr = "";
-    child.stderr.on("data", (chunk: Buffer) => {
-      stderr = (stderr + chunk.toString()).slice(-2000);
-    });
-    const exited = new Promise<number | null>((resolve) => {
-      child.on("close", (code) => resolve(code));
-      child.on("error", (error: NodeJS.ErrnoException) => {
-        stderr +=
-          error.code === "ENOENT"
-            ? `Claude Code CLI not found ("${this.options.claudePath}"). Install it or set CLAUDE_PATH.`
-            : error.message;
-        resolve(null);
-      });
-    });
-
-    // Prompt via stdin rather than argv: no quoting issues, no length limits.
-    child.stdin.end(request.prompt);
-
-    let finished = false;
+    let reusable = false;
     try {
-      for await (const line of createInterface({ input: child.stdout })) {
-        if (!line.trim()) continue;
-        let parsed: unknown;
-        try {
-          parsed = JSON.parse(line);
-        } catch {
+      for (;;) {
+        const item = await live.proc.next(request.signal);
+        if (item.kind === "aborted") {
+          yield { type: "done", ok: false, error: "Stopped." };
+          return;
+        }
+        if (item.kind === "exit") {
+          yield { type: "done", ok: false, error: this.exitError(item, live.proc) };
+          return;
+        }
+        const parsed = parseClaudeLine(item.value);
+        if (!parsed) continue;
+        if (parsed.kind === "session") {
+          live.sessionId = parsed.sessionId;
+          if (!this.sessions.has(parsed.sessionId)) this.sessions.set(parsed.sessionId, {});
+          yield { type: "session", sessionId: parsed.sessionId };
           continue;
         }
-        for (const event of mapStreamLine(parsed)) {
-          if (event.type === "done") finished = true;
-          yield event;
+        if (parsed.kind === "events") {
+          yield* parsed.events;
+          continue;
         }
-      }
-      const code = await exited;
-      if (!finished) {
-        yield {
-          type: "done",
-          ok: false,
-          error: request.signal?.aborted
-            ? "Stopped."
-            : `claude exited with code ${code}: ${stderr.trim() || "no output"}`,
-        };
+
+        const { result } = parsed;
+        const sessionId = parsed.sessionId ?? live.sessionId;
+        let costUsd: number | undefined;
+        if (result.totalCostUsd !== undefined) {
+          if (live.costBaseline !== undefined && result.totalCostUsd >= live.costBaseline) {
+            // Rounded: the difference of two cumulative floats carries noise like 0.000193309999.
+            costUsd = Math.round((result.totalCostUsd - live.costBaseline) * 1e6) / 1e6;
+          }
+          live.costBaseline = result.totalCostUsd;
+          if (sessionId) this.sessions.set(sessionId, { totalCostUsd: result.totalCostUsd });
+        }
+        reusable = result.ok;
+        yield result.ok
+          ? { type: "done", ok: true, stats: { ...result.stats, costUsd } }
+          : { type: "done", ok: false, error: result.error, stats: { ...result.stats, costUsd } };
+        return;
       }
     } finally {
-      request.signal?.removeEventListener("abort", onAbort);
-      if (child.exitCode === null) child.kill("SIGTERM");
+      if (reusable && keepWarm && live.sessionId && !live.proc.exited) {
+        this.parkWarm(live);
+      } else {
+        // A one-shot run closed stdin, so the CLI exits by itself once the session is saved.
+        if (reusable && !keepWarm) await live.proc.waitForExit(3000);
+        live.proc.kill();
+      }
     }
+  }
+
+  private exitError(item: Extract<ProcessOutput, { kind: "exit" }>, proc: JsonLineProcess): string {
+    if (item.spawnError?.code === "ENOENT") {
+      return `Claude Code CLI not found ("${this.options.claudePath}"). ${INSTALL_HINT}`;
+    }
+    if (item.spawnError) return `Could not start Claude Code: ${item.spawnError.message}`;
+    const diagnostics = proc.diagnostics;
+    const friendly = claudeErrorMessage({}, diagnostics);
+    if (friendly !== "Claude run failed") return friendly;
+    return `claude exited with code ${item.code}: ${diagnostics.slice(-600) || "no output"}`;
+  }
+
+  private takeWarm(sessionId: string, key: string): LiveProcess | undefined {
+    const live = this.warmPool.get(sessionId);
+    if (!live || live.key !== key || live.proc.exited) return undefined;
+    this.warmPool.delete(sessionId);
+    clearTimeout(live.idleTimer);
+    return live;
+  }
+
+  private parkWarm(live: LiveProcess): void {
+    const sessionId = live.sessionId!;
+    this.evict(sessionId);
+    this.warmPool.set(sessionId, live);
+    live.proc.unref();
+    live.idleTimer = setTimeout(() => this.evict(sessionId), this.options.idleTimeoutMs ?? DEFAULT_IDLE_MS);
+    live.idleTimer.unref();
+    const max = this.options.maxWarmProcesses ?? 3;
+    // Map iteration order is insertion order, so the first entries are the least recently used.
+    for (const oldest of this.warmPool.keys()) {
+      if (this.warmPool.size <= max) break;
+      this.evict(oldest);
+    }
+  }
+
+  private evict(sessionId: string): void {
+    const live = this.warmPool.get(sessionId);
+    if (!live) return;
+    this.warmPool.delete(sessionId);
+    clearTimeout(live.idleTimer);
+    live.proc.kill();
   }
 }

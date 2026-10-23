@@ -42,20 +42,25 @@ local function handleText(data, dispatch)
   local okDecode, msg = pcall(json.decode, data)
   if not okDecode or msg == nil then return end
 
-  if msg.id == nil then
-    if msg.event ~= nil then emit("event", msg) end
+  -- Events first: an event may carry its own "id" field (ui_debug's widget id), and
+  -- requests from the bridge never have an "event" field.
+  if msg.event ~= nil then
+    emit("event", msg)
     return
   end
+  if msg.id == nil then return end
 
   local ok, result = pcall(dispatch, msg.method, msg.params)
   if ok then
     M.send({ id = msg.id, result = result })
   else
-    M.send({ id = msg.id, error = tostring(result) })
+    -- "…/rpc/image.lua:42: Layer not found" → "Layer not found": the model reads these.
+    M.send({ id = msg.id, error = (tostring(result):gsub("^[^\n]-%.lua:%d+: ", "")) })
   end
 end
 
-function M.start(url, dispatch)
+-- hello: extra fields sent on every (re)connect so the bridge knows who it talks to.
+function M.start(url, dispatch, hello)
   M.stop()
   socket = WebSocket{
     url = url,
@@ -66,7 +71,9 @@ function M.start(url, dispatch)
     onreceive = function(messageType, data, errorInfo)
       if messageType == WebSocketMessageType.OPEN then
         setStatus("connected")
-        M.send({ event = "hello", asepriteVersion = tostring(app.version) })
+        local msg = { event = "hello", asepriteVersion = tostring(app.version) }
+        for k, v in pairs(hello or {}) do msg[k] = v end
+        M.send(msg)
       elseif messageType == WebSocketMessageType.CLOSE then
         setStatus("disconnected")
       elseif messageType == WebSocketMessageType.ERROR then
