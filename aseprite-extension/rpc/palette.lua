@@ -14,7 +14,7 @@ return function(U)
     local colors = p.colors
     if not colors or #colors == 0 then error("colors must not be empty") end
     if #colors > 256 then error("A palette holds at most 256 colors") end
-    app.transaction("AI: palette", function()
+    U.transaction(sprite, "AI: palette", function()
       local palette = sprite.palettes[1]
       palette:resize(#colors)
       for i, hex in ipairs(colors) do

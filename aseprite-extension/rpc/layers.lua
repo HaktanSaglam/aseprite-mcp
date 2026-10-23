@@ -126,21 +126,12 @@ return function(U)
     end,
   }
 
-  -- Commands act on the active sprite, and app.transaction only groups changes of the
-  -- active sprite, so these ops switch to it first and open the transaction there.
-  -- Commands then join the open transaction: duplicate + rename is ONE undo step.
-  local COMMAND_OPS = { duplicate = true, merge_down = true }
-
+  -- Commands act on the active sprite and app.transaction only groups changes of the
+  -- active sprite: U.transaction makes it active for the call, so commands join the open
+  -- transaction too (duplicate + rename is ONE undo step), on any tab.
   local function inTransaction(sprite, p, op)
     local layer
-    local label = "AI: layer " .. p.op
-    if COMMAND_OPS[p.op] then
-      U.withActive(sprite, function()
-        app.transaction(label, function() layer = op(sprite, p) end)
-      end)
-    else
-      app.transaction(label, function() layer = op(sprite, p) end)
-    end
+    U.transaction(sprite, "AI: layer " .. p.op, function() layer = op(sprite, p) end)
     return layer
   end
 

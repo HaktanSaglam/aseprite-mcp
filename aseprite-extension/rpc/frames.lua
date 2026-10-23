@@ -3,12 +3,8 @@
 return function(U)
   local M = {}
 
-  -- app.transaction only groups the changes of the ACTIVE sprite: on a background tab
-  -- every API call becomes its own undo step, and an empty step lands in the history of
-  -- the tab the user is looking at. So the sprite is active while its transaction runs.
-  local function transaction(sprite, label, fn)
-    U.withActive(sprite, function() app.transaction(label, fn) end)
-  end
+  -- See U.transaction: one undo step, also on a background tab.
+  local transaction = U.transaction
 
   -- sprite:newFrame() has surprising numbering in scripts, so insert empty frames and
   -- copy cels explicitly.

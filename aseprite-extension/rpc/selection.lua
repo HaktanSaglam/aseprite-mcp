@@ -73,7 +73,7 @@ return function(U)
     local sprite = U.sprite(p)
     local op = OPS[p.op or "replace"]
     if not op then error("Unknown selection op: " .. tostring(p.op)) end
-    app.transaction("AI: select", function()
+    U.transaction(sprite, "AI: select", function()
       sprite.selection = op(sprite, p)
     end)
     app.refresh()

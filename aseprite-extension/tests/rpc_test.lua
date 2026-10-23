@@ -566,6 +566,28 @@ test("frame and tag ops on a background sprite are one undo step each", function
   eq(#call("get_sprite_info", { sprite = bg.id }).frames, 1, "all added frames undone in one step")
 end)
 
+test("writes, palettes and layers on a background sprite are one undo step there and none in the user's tab", function()
+  local bg = call("create_sprite", { width = 2, height = 1 })
+  local front = call("create_sprite", { width = 1, height = 1 })
+  call("write_image", { x = 0, y = 0, width = 1, height = 1, format = "rgba", data = BLUE })
+  call("write_images", { sprite = bg.id, writes = {
+    { x = 0, y = 0, width = 1, height = 1, layer = "Art", format = "rgba", data = RED },
+    { x = 1, y = 0, width = 1, height = 1, layer = "Art", format = "rgba", data = GREEN },
+  } })
+  call("set_palette", { sprite = bg.id, colors = { "#000000", "#ffffff" } })
+  call("layer_op", { sprite = bg.id, op = "add", name = "Extra" })
+  eq(call("get_sprite_info", {}).id, front.id, "user's tab stays active")
+  call("undo", { sprite = bg.id })
+  call("undo", { sprite = bg.id })
+  call("undo", { sprite = bg.id })
+  -- The write created "Art", so undoing it removes the layer with both pixels.
+  local layers = call("get_sprite_info", { sprite = bg.id }).layers
+  eq(#layers, 1, "three undos revert the layer, the palette and the whole write")
+  -- No empty "AI: ..." steps landed in the user's history: one undo removes their pixel.
+  call("undo", {})
+  eq(call("read_image", {}).data, CLEAR, "user's last edit is still the top undo step")
+end)
+
 test("copy_cel rejects bad frames, flips and layers", function()
   call("create_sprite", { width = 2, height = 2, frames = 2 })
   expectError(function() call("frame_op", { op = "copy_cel", from = 1 }) end, "needs from and to")

@@ -106,6 +106,16 @@ function U.withActive(sprite, fn)
   return result
 end
 
+-- app.transaction opens its transaction on the ACTIVE document (Aseprite's
+-- App_transaction takes the context's active doc): for a background tab it would group
+-- nothing (each API call its own undo step, so the model's own `undo` could revert half
+-- a write) and leave an empty undo step in the tab the user is looking at. So the sprite
+-- is made active for the transaction and the user's tab restored right after, within
+-- the same call, before Aseprite repaints: ONE undo step on the right sprite.
+function U.transaction(sprite, label, fn)
+  U.withActive(sprite, function() app.transaction(label, fn) end)
+end
+
 function U.rect(p, sprite)
   return {
     x = math.floor(p.x or 0),

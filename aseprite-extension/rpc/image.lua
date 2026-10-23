@@ -126,8 +126,8 @@ return function(U)
   function M.write_image(p)
     local sprite = U.sprite(p)
     local layerName
-    -- One transaction = one Ctrl+Z step for the whole AI edit.
-    app.transaction("AI: draw", function()
+    -- One transaction = one Ctrl+Z step for the whole AI edit (on the active sprite).
+    U.transaction(sprite, "AI: draw", function()
       layerName = applyWrite(sprite, p)
     end)
     app.refresh()
@@ -137,7 +137,7 @@ return function(U)
   function M.write_images(p)
     local sprite = U.sprite(p)
     local count = 0
-    app.transaction("AI: draw", function()
+    U.transaction(sprite, "AI: draw", function()
       for _, w in ipairs(p.writes) do
         applyWrite(sprite, w)
         count = count + 1
