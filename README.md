@@ -12,7 +12,7 @@ Chat with it in a window inside Aseprite, or connect any [MCP](https://modelcont
 ![Aseprite 1.3+](https://img.shields.io/badge/Aseprite-1.3%2B-7d929e)
 ![Node 20+](https://img.shields.io/badge/node-20%2B-339933)
 
-<img src="docs/images/hero.png" alt="The Aseprite MCP assistant next to a sprite it drew" width="860">
+<img src="docs/images/hero.png" alt="A knight turned into four directions, a wizard drawn to match its style and a glowing mushroom, all drawn by Claude inside Aseprite" width="860">
 
 </div>
 
