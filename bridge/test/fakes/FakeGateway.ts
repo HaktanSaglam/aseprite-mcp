@@ -1,5 +1,6 @@
 import type {
   IAsepriteGateway,
+  ISpriteCloser,
   ReadImageRequest,
   SelectionMask,
   WriteImageRequest,
@@ -100,7 +101,7 @@ const DEFAULT_PALETTE = ["#00000000", "#000000ff", "#ffffffff"];
  * Errors use the same wording as the Lua extension so tools see realistic failures.
  * Test-arrangement helpers (addSprite, fillRect, ...) are not recorded in `calls`.
  */
-export class FakeGateway implements IAsepriteGateway {
+export class FakeGateway implements IAsepriteGateway, ISpriteCloser {
   connected = true;
   activeId: number | null = null;
   readonly calls: FakeCall[] = [];
@@ -216,6 +217,23 @@ export class FakeGateway implements IAsepriteGateway {
     this.log("createSprite", options);
     const id = this.addSprite(options);
     return this.info(this.sprite({ sprite: id }));
+  }
+
+  /** Like the extension: onlyIfEmpty keeps a sprite with any pixel in any cel. */
+  async closeSprite(sprite: number, options: { onlyIfEmpty?: boolean } = {}): Promise<boolean> {
+    this.log("closeSprite", sprite, options);
+    const found = this.sprite({ sprite });
+    const hasPixels = (layers: FakeLayer[]): boolean =>
+      layers.some((l) => [...l.cels.values()].some((c) => c.data.some((v, i) => i % 4 === 3 && v > 0)) || hasPixels(l.children));
+    if (options.onlyIfEmpty && hasPixels(found.state.layers)) return false;
+    this.sprites.delete(sprite);
+    if (this.activeId === sprite) this.activeId = null;
+    return true;
+  }
+
+  /** Test helper: whether a sprite is still open. */
+  isOpen(sprite: number): boolean {
+    return this.sprites.has(sprite);
   }
 
   async spriteOp(op: SpriteOp, ref: SpriteRef = {}): Promise<SpriteInfo> {
@@ -478,6 +496,8 @@ export class FakeGateway implements IAsepriteGateway {
     if (op.op === "activate") {
       sprite.state.activeFrame = checkFrame(sprite.state, op.frame);
       this.activeId = sprite.id;
+    } else if (op.op === "copy_cel") {
+      this.mutate(sprite, (s) => copyCel(s, op, this.copyTargets(s, op.layer)));
     } else {
       this.mutate(sprite, (s) => applyFrameOp(s, op));
     }
@@ -642,6 +662,15 @@ export class FakeGateway implements IAsepriteGateway {
       .map((e) => e.layer)
       .filter((l) => !l.isGroup)
       .at(-1);
+  }
+
+  /** The named layer, or every editable image layer (locked ones are skipped, like the extension). */
+  private copyTargets(s: FakeSpriteState, name: string | undefined): FakeLayer[] {
+    if (name === undefined) return this.entries(s).map((e) => e.layer).filter((l) => !l.isGroup && l.editable);
+    const { layer } = this.require(s, name);
+    if (layer.isGroup) throw new Error(`Layer is a group: ${layer.name}`);
+    if (!layer.editable) throw new Error(`Layer is locked: ${layer.name}`);
+    return [layer];
   }
 
   private findOrCreateLayer(s: FakeSpriteState, name: string): FakeLayer {
@@ -837,11 +866,36 @@ function shiftFrames(s: FakeSpriteState, from: number, delta: number): void {
   };
   walk(s.layers);
   const count = s.frames.length;
+  // Like Aseprite: frames inserted right after a tag's last frame stretch that tag.
+  const stretchesFrom = delta > 0 ? from - 1 : from;
   for (const tag of s.tags) {
     if (tag.from >= from) tag.from = Math.max(1, Math.min(count, tag.from + delta));
-    if (tag.to >= from) tag.to = Math.max(tag.from, Math.min(count, tag.to + delta));
+    if (tag.to >= stretchesFrom) tag.to = Math.max(tag.from, Math.min(count, tag.to + delta));
   }
   s.activeFrame = Math.max(1, Math.min(count, s.activeFrame));
+}
+
+/** frame_op copy_cel: the target frame becomes the source frame on those layers, optionally mirrored. */
+function copyCel(s: FakeSpriteState, op: Extract<FrameOp, { op: "copy_cel" }>, layers: FakeLayer[]): void {
+  const from = checkFrame(s, op.from);
+  const to = checkFrame(s, op.to);
+  for (const layer of layers) {
+    const source = layer.cels.get(from);
+    if (!source) {
+      layer.cels.delete(to);
+      continue;
+    }
+    const copy = createRgbaImage(source.width, source.height);
+    for (let y = 0; y < source.height; y++) {
+      for (let x = 0; x < source.width; x++) {
+        const sx = op.flip === "horizontal" ? source.width - 1 - x : x;
+        const sy = op.flip === "vertical" ? source.height - 1 - y : y;
+        const o = (sy * source.width + sx) * 4;
+        copy.data.set(source.data.subarray(o, o + 4), (y * source.width + x) * 4);
+      }
+    }
+    layer.cels.set(to, copy);
+  }
 }
 
 function applyFrameOp(s: FakeSpriteState, op: Exclude<FrameOp, { op: "activate" }>): void {

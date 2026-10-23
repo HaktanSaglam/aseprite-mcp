@@ -160,6 +160,14 @@ describe("undo / redo", () => {
   it("validates steps", async () => {
     gw.addSprite();
     expect(await h.error("undo", { steps: 0 })).toMatch(/Input validation error/);
+    expect(await h.error("undo", { steps: 1001 })).toMatch(/Input validation error/);
+  });
+
+  it("takes back a whole AI run in one call (Undo AI run)", async () => {
+    gw.addSprite();
+    for (let i = 0; i < 150; i++) await gw.tagOp({ op: "add", name: `t${i}` });
+    expect((await h.call("undo", { steps: 150 })).text).toBe("Undid 150 steps.");
+    expect(gw.state().tags).toEqual([]);
   });
 });
 
@@ -199,7 +207,32 @@ describe("save_sprite", () => {
   it("rejects relative paths and unknown extensions", async () => {
     gw.addSprite();
     expect(await h.error("save_sprite", { path: "art.aseprite" })).toMatch(/must be absolute/);
-    expect(await h.error("save_sprite", { path: join(dir, "a.psd") })).toMatch(/\.aseprite, \.ase, \.png, \.gif/);
+    expect(await h.error("save_sprite", { path: join(dir, "a.psd") })).toMatch(/must end with \.aseprite, \.ase;/);
+  });
+
+  // Aseprite asks a modal flatten question for these, which blocks the bridge.
+  it("points .png and .gif paths to export_sprite", async () => {
+    gw.addSprite();
+    for (const name of ["hero.png", "walk.GIF"]) {
+      const path = join(dir, name);
+      expect(await h.error("save_sprite", { path })).toMatch(
+        new RegExp(`writes \\.aseprite/\\.ase files only\\. To write ".*${name}", use export_sprite \\{"path":".*${name}"\\}`),
+      );
+    }
+    expect(gw.saves).toEqual([]);
+  });
+
+  it("refuses to save over an opened .png and says how to keep the layers instead", async () => {
+    const png = join(dir, "imported.png");
+    gw.addSprite({ filename: png });
+    const message = await h.error("save_sprite");
+    expect(message).toContain(`This sprite's file is "${png}", not an Aseprite file`);
+    expect(message).toContain(`Pass path ending in .aseprite (e.g. ${join(dir, "imported.aseprite")})`);
+    expect(message).toContain(`export_sprite {"path":${JSON.stringify(png)},"overwrite":true}`);
+    expect(gw.saves).toEqual([]);
+    // Saving it as an Aseprite file is fine.
+    await h.json("save_sprite", { path: join(dir, "imported.aseprite") });
+    expect(gw.saves.map((s) => s.path)).toEqual([join(dir, "imported.aseprite")]);
   });
 });
 

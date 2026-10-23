@@ -10,7 +10,17 @@ import { jsonResult } from "../toolResult.js";
 
 // Bigger canvases make every pixel tool slow and previews useless; nobody pixels at 4K.
 export const MAX_CANVAS_SIDE = 2048;
-const SAVE_EXTENSIONS = [".aseprite", ".ase", ".png", ".gif"] as const;
+export const MAX_UNDO_STEPS = 1000;
+/**
+ * Saving a multi-layer sprite as .png/.gif makes Aseprite stop with a modal question
+ * (flatten? drop tags?), which blocks every bridge request until someone clicks it, so
+ * save_sprite only writes Aseprite files and images go through export_sprite.
+ */
+const SAVE_EXTENSIONS = [".aseprite", ".ase"] as const;
+const IMAGE_EXTENSIONS = [".png", ".gif"];
+
+const isAsepriteFile = (path: string) => (SAVE_EXTENSIONS as readonly string[]).includes(extname(path).toLowerCase());
+const isImageFile = (path: string) => IMAGE_EXTENSIONS.includes(extname(path.trim()).toLowerCase());
 
 export const EDIT_ACTIONS = ["resize", "canvas", "crop", "trim", "color_mode", "rotate", "flip"] as const;
 
@@ -336,7 +346,8 @@ export const registerDocumentTools: ToolRegistrar = (server, { gateway }) => {
     },
   );
 
-  const steps = z.number().int().min(1).max(100).default(1).describe("How many steps (default 1).");
+  // "Undo AI run" sends a whole run's steps; animating 8 directions can take a few hundred.
+  const steps = z.number().int().min(1).max(MAX_UNDO_STEPS).default(1).describe("How many steps (default 1).");
 
   server.registerTool(
     "undo",
@@ -371,11 +382,11 @@ export const registerDocumentTools: ToolRegistrar = (server, { gateway }) => {
     {
       title: "Save sprite",
       description:
-        "Save the active sprite. Without path it saves to its current file (only if it was saved before). " +
-        "With path it saves as that file: absolute or ~/..., .aseprite keeps layers/frames/tags " +
-        "(.png/.gif flatten, prefer export_sprite for those). Existing files are only replaced with overwrite: true.",
+        "Save the active sprite as an Aseprite file (.aseprite/.ase keeps layers, frames and tags). Without path it " +
+        "saves to its current file, if that is an .aseprite/.ase file. With path it saves as that file (absolute or " +
+        "~/...). For .png or .gif use export_sprite. Existing files are only replaced with overwrite: true.",
       inputSchema: {
-        path: z.string().optional().describe("Absolute path or ~/..., ending in .aseprite, .ase, .png or .gif."),
+        path: z.string().optional().describe("Absolute path or ~/..., ending in .aseprite or .ase."),
         copy: z.boolean().default(false).describe("Save a copy; the open document keeps its current file name."),
         overwrite: z.boolean().default(false).describe("Allow replacing an existing file."),
       },
@@ -388,7 +399,21 @@ export const registerDocumentTools: ToolRegistrar = (server, { gateway }) => {
             `"${info.filename}" has never been saved; pass path, e.g. ~/Desktop/${info.filename || "sprite"}.aseprite`,
           );
         }
+        if (!isAsepriteFile(info.filename)) {
+          const stem = basename(info.filename, extname(info.filename));
+          throw new Error(
+            `This sprite's file is "${info.filename}", not an Aseprite file: saving in that format would flatten its ` +
+              `layers. Pass path ending in .aseprite (e.g. ${join(dirname(info.filename), `${stem}.aseprite`)}) to keep ` +
+              `them, or use export_sprite ${JSON.stringify({ path: info.filename, overwrite: true })} to update the image.`,
+          );
+        }
         return jsonResult({ ok: true, path: await gateway.saveSprite({}) });
+      }
+      if (isImageFile(path)) {
+        throw new Error(
+          `save_sprite writes .aseprite/.ase files only. To write "${path.trim()}", use export_sprite ` +
+            `${JSON.stringify({ path: path.trim() })} (kind png or gif; add tag or frame to pick frames).`,
+        );
       }
       const target = resolveOutputPath(path, {
         extensions: SAVE_EXTENSIONS,

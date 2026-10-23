@@ -44,9 +44,21 @@ function service(registrars: ToolRegistrar[] = [dummyTools]) {
 
 describe("InstantToolService", () => {
   it("allows exactly the PROTOCOL.md instant tools", () => {
-    expect([...INSTANT_TOOLS].sort()).toEqual(
-      ["add_outline", "adjust_colors", "apply_palette", "cleanup_pixels", "drop_shadow", "redo", "reduce_colors", "remove_background", "replace_color", "transform_layer", "undo"],
-    );
+    expect([...INSTANT_TOOLS].sort()).toEqual([
+      "add_outline",
+      "adjust_colors",
+      "apply_palette",
+      "cleanup_pixels",
+      "drop_shadow",
+      "import_image",
+      "normalize_pixel_art",
+      "redo",
+      "reduce_colors",
+      "remove_background",
+      "replace_color",
+      "transform_layer",
+      "undo",
+    ]);
   });
 
   it("calls the MCP tool in-process on the requested sprite and returns its text", async () => {

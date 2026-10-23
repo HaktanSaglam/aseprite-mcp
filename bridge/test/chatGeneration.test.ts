@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { ChatSendRequest } from "../src/chat/chatSchema.js";
 import type { ChatUpdate, RequestRun } from "../src/chat/chatUpdates.js";
 import { GenerationService, subjectName } from "../src/chat/GenerationService.js";
+import { SpriteActivity } from "../src/aseprite/SpriteActivity.js";
 import { SessionStore } from "../src/chat/SessionStore.js";
 import type { LlmEvent, LlmRunRequest } from "../src/llm/LlmRunner.js";
 import { mcpUrls } from "../src/mcp/httpServer.js";
@@ -12,7 +13,7 @@ const URLS = mcpUrls("127.0.0.1", 7800);
 function setup(maxParallelRuns = 2) {
   const gateway = new FakeGateway();
   const sessions = new SessionStore();
-  const service = new GenerationService({ gateway, mcpUrlFor: URLS.forSprite, sessions, maxParallelRuns });
+  const service = new GenerationService({ gateway, mcpUrlFor: URLS.forSprite, sessions, maxParallelRuns, activity: new SpriteActivity() });
   const runner = new FakeRunner();
   const updates: ChatUpdate[] = [];
   const controller = new AbortController();
@@ -58,7 +59,7 @@ describe("GenerationService: variations", () => {
 
     expect(updates[0]).toEqual({
       kind: "status",
-      text: "Drawing 4 variations in parallel: Variation 1 in Sprite-0001, Variation 2 in Sprite-0002, Variation 3 in Sprite-0003, Variation 4 in Sprite-0004.",
+      text: "Drawing 4 variations in parallel, each in its own tab.",
     });
     const progress = updates.filter((u) => u.kind === "progress");
     expect(progress.map((p) => (p.kind === "progress" ? [p.done, p.total] : []))).toEqual([[0, 4], [1, 4], [2, 4], [3, 4], [4, 4]]);
@@ -83,7 +84,7 @@ describe("GenerationService: variations", () => {
       [1, 2].map((k) => ({ width: 24, height: 20, colorMode: "rgb", name: `Sprite (variation ${k})` })),
     );
     expect(runner.requests.every((r) => r.images?.length === 1)).toBe(true);
-    expect(runner.requests[0].prompt).toMatch(/^Draw variation 1 of 2 of the sprite in the attached image/);
+    expect(runner.requests[0].prompt).toMatch(/^Draw variation 1 of 2 of the sprite in the first attached image/);
   });
 
   it("needs a description or a non-empty sprite the model can see", async () => {
@@ -195,10 +196,18 @@ describe("GenerationService: directions", () => {
         to: i + 1,
       })),
     );
-    expect(runner.requests).toHaveLength(1);
-    expect(runner.requests[0].mcpUrl).toBe(URLS.forSprite(1));
+    // Draw, then the bridge mirrors the left-facing frames, then one fix-up run in the same conversation.
+    expect(runner.requests).toHaveLength(2);
+    expect(runner.requests.map((r) => r.mcpUrl)).toEqual([URLS.forSprite(1), URLS.forSprite(1)]);
     expect(runner.requests[0].prompt).toMatch(/1 = down, 2 = down-right/);
     expect(runner.requests[0].prompt).toMatch(/tags: "down" 1-1 forward/); // canvas reflects the prepared tags
+    expect(gateway.callsOf("frameOp").map((c) => c.args[0])).toEqual([
+      { op: "copy_cel", from: 4, to: 6, flip: "horizontal" },
+      { op: "copy_cel", from: 3, to: 7, flip: "horizontal" },
+      { op: "copy_cel", from: 2, to: 8, flip: "horizontal" },
+    ]);
+    expect(runner.requests[1].prompt).toMatch(/^The bridge mirrored frame 4 \(up-right\) into frame 6 \(up-left\)/);
+    expect(runner.requests[1].sessionId).toBe("s-1");
     expect(updates.some((u) => u.kind === "tool")).toBe(true); // a single job shows its tool calls
     expect(sessions.get("claude-code", 1)).toBe("s-1");
   });

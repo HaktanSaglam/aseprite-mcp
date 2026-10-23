@@ -89,7 +89,7 @@ export type SpriteOp =
   | ({ op: "crop" } & Rect)
   | { op: "color_mode"; mode: ColorMode }
   | { op: "rotate"; angle: 90 | 180 | 270 }
-  | { op: "flip"; direction: "horizontal" | "vertical" };
+  | { op: "flip"; direction: FlipDirection };
 
 export type LayerOp =
   | { op: "add"; name: string; group?: string; above?: string; isGroup?: boolean }
@@ -108,11 +108,15 @@ export type LayerOp =
   | { op: "merge_down"; name: string }
   | { op: "activate"; name: string };
 
+export type FlipDirection = "horizontal" | "vertical";
+
 export type FrameOp =
   | { op: "add"; after?: number; count?: number; copy?: boolean; durationMs?: number }
   | { op: "delete"; from: number; to?: number }
   | { op: "duration"; frames?: number[]; durationMs: number }
-  | { op: "activate"; frame: number };
+  | { op: "activate"; frame: number }
+  /** One layer's cel (default: every writable image layer) from `from` to `to`, optionally mirrored. */
+  | { op: "copy_cel"; from: number; to: number; layer?: string; flip?: FlipDirection };
 
 export type TagOp =
   | {

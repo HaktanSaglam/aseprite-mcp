@@ -158,7 +158,12 @@ export class ChatService {
       else if (outcome.ok) {
         this.push({
           kind: "done",
-          stats: { durationMs: Date.now() - started, turns: outcome.turns, costUsd: outcome.costUsd },
+          stats: {
+            durationMs: Date.now() - started,
+            turns: outcome.turns,
+            costUsd: outcome.costUsd,
+            ...(outcome.undo ? { undoSteps: outcome.undo.steps, sprite: outcome.undo.sprite } : {}),
+          },
         });
       }
     } catch (error) {

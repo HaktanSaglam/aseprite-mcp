@@ -6,6 +6,10 @@ export interface DoneStats {
   durationMs: number;
   turns?: number;
   costUsd?: number;
+  /** Undo steps the run added to `sprite`: "Undo AI run" sends tool_run undo {steps} for it. */
+  undoSteps?: number;
+  /** The sprite undoSteps belong to (not always the tab the request was sent from). */
+  sprite?: number;
 }
 
 export type ChatUpdate =
@@ -37,6 +41,11 @@ export interface RequestOutcome {
   ok: boolean;
   turns?: number;
   costUsd?: number;
+  /**
+   * Set only for a run that changed one sprite the user already had: a sprite the bridge
+   * created is simply closed, and one number can't undo several sprites.
+   */
+  undo?: { sprite: number; steps: number };
 }
 
 /** Handles one kind of chat_send (single model run, or parallel generation jobs). */

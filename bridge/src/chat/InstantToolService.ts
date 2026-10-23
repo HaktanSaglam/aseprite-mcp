@@ -13,6 +13,8 @@ export const INSTANT_TOOLS: ReadonlySet<string> = new Set([
   "cleanup_pixels",
   "transform_layer",
   "drop_shadow",
+  "normalize_pixel_art",
+  "import_image",
   "undo",
   "redo",
 ]);
