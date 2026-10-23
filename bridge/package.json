@@ -2,7 +2,7 @@
   "name": "aseprite-mcp-bridge",
   "version": "1.0.0",
   "description": "Bridge between Aseprite and Claude via MCP",
-  "license": "MIT",
+  "license": "PolyForm-Noncommercial-1.0.0",
   "type": "module",
   "main": "dist/index.js",
   "bin": {

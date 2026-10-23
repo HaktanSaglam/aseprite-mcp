@@ -162,6 +162,13 @@ The [release workflow](.github/workflows/release.yml) checks that the versions m
 runs the tests, and publishes a GitHub release with the extension, the bridge package and
 checksums. Tags with a dash (`v1.1.0-beta.1`) become pre-releases.
 
+## License of contributions
+
+Aseprite MCP is source-available under the [PolyForm Noncommercial License 1.0.0](LICENSE): free
+for personal, hobby, research and other noncommercial use, not for selling or other commercial
+use. By opening a pull request you agree that your contribution is licensed under the same terms
+and that the maintainer may also offer it under other terms, for example a commercial license.
+
 ## Code of conduct
 
 This project follows the [Contributor Covenant](CODE_OF_CONDUCT.md). Be kind.
