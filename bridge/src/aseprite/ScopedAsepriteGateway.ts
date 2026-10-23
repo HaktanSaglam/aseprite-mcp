@@ -133,8 +133,8 @@ export class ScopedAsepriteGateway implements IAsepriteGateway {
     if (sprites.some((s) => s.id === this.spriteId && s.isActive)) return;
     throw new Error(
       `This job draws into sprite #${this.spriteId}, which is not the tab the user is looking at, so it ` +
-        `cannot ${what}: that would switch the user's tab. Activating is not needed: drawing, effect and ` +
-        "view tools take frame and layer arguments, so keep working with those.",
+        `cannot ${what}: that would switch the user's tab. Activating is not needed: drawing and view ` +
+        "tools take frame and layer arguments, effect tools take frames and layer, so keep working with those.",
     );
   }
 

@@ -36,7 +36,8 @@ interface Options {
 
 /** Timestamped, so reconnects and slow calls can be lined up with what the user saw. */
 function log(message: string): void {
-  console.error(`[bridge ${new Date().toISOString().slice(11, 19)}] ${message}`);
+  // Local time: the user compares it with their clock, not with UTC.
+  console.error(`[bridge ${new Date().toTimeString().slice(0, 8)}] ${message}`);
 }
 
 /**

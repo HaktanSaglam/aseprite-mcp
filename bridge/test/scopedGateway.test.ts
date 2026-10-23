@@ -109,7 +109,7 @@ describe("ScopedAsepriteGateway: activate", () => {
   it("refuses to activate a frame or layer of a sprite in a background tab", async () => {
     const { inner, scoped } = setup();
     await expect(scoped.frameOp({ op: "activate", frame: 1 })).rejects.toThrow(
-      /sprite #3, which is not the tab the user is looking at, so it cannot activate frame 1.*take frame and layer arguments/,
+      /sprite #3, which is not the tab the user is looking at, so it cannot activate frame 1.*take frame and layer arguments, effect tools take frames and layer/,
     );
     await expect(scoped.layerOp({ op: "activate", name: "Layer 1" })).rejects.toThrow(/cannot activate layer "Layer 1"/);
     expect(inner.callsOf("frameOp")).toHaveLength(0);
