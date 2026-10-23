@@ -59,9 +59,9 @@ given a walk cycle.</sub>
 </table>
 
 <p align="center">
-  <img src="docs/images/examples.png" alt="A red dragon breathing fire, a glowing green mushroom, a girl adventurer and a blue mana potion" width="860"><br>
-  <sub><i>"a small red dragon breathing fire, side view"</i> (48×48) · <i>"a glowing green mushroom"</i>
-  (24×24, PICO-8 palette, max 6 colors) · <i>"a girl adventurer with a big backpack"</i> (32×32) ·
+  <img src="docs/images/examples.png" alt="A red dragon breathing fire, a glowing green mushroom with sparkles, a girl adventurer and a blue mana potion" width="860"><br>
+  <sub><i>"a small red dragon breathing fire, side view"</i> (48×48) · <i>"a glowing magical green mushroom
+  with bright spots and floating sparkles"</i> (32×32) · <i>"a girl adventurer with a big backpack"</i> (32×32) ·
   <i>"a blue mana potion icon"</i> (16×16)</sub>
 </p>
 
@@ -83,7 +83,7 @@ given a walk cycle.</sub>
 <p align="center">
   <img src="docs/images/showcase.png" alt="A fox in four directions, a wizard in the fox's style and a glowing mushroom" width="860"><br>
   <sub>The fox turned into four facings, a wizard drawn with the fox as style reference, and a
-  mushroom limited to the PICO-8 palette and 6 colors.</sub>
+  glowing mushroom.</sub>
 </p>
 
 <p align="center">
