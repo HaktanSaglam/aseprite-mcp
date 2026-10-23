@@ -143,14 +143,14 @@ describe("executeRun", () => {
     ]);
   });
 
-  it("shows the closing reply, not the narration between tool calls", async () => {
+  it("shows only the closing reply, not the narration or the self-check before it", async () => {
     const runner = new FakeRunner(async function* (): AsyncIterable<LlmEvent> {
       yield { type: "text", text: "Drawing the base first." };
       yield { type: "tool", name: "draw_script" };
       yield { type: "text", text: "Frame 3 is good; check frame 2." };
       yield { type: "tool", name: "view_sprite" };
-      yield { type: "text", text: "Drew a walking knight." };
-      yield { type: "text", text: "Every frame loops." };
+      yield { type: "text", text: "Reads well: plume, tabard, boots." };
+      yield { type: "text", text: "Yürüyen bir şövalye çizdim." };
       yield { type: "done", ok: true };
     });
     const updates: ChatUpdate[] = [];
@@ -158,7 +158,7 @@ describe("executeRun", () => {
     expect(updates).toEqual([
       { kind: "tool", name: "draw_script" },
       { kind: "tool", name: "view_sprite" },
-      { kind: "text", text: "Drew a walking knight.\nEvery frame loops." },
+      { kind: "text", text: "Yürüyen bir şövalye çizdim." },
     ]);
   });
 
